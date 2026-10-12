@@ -217,9 +217,21 @@ fn attribute(html: &str, key: &str) -> Option<String> {
     Some(rest[start..end].to_owned())
 }
 
+fn char_window(text: &str, start: usize, end: usize) -> &str {
+    let mut low = start.min(text.len());
+    while low > 0 && !text.is_char_boundary(low) {
+        low -= 1;
+    }
+    let mut high = end.clamp(low, text.len());
+    while high > low && !text.is_char_boundary(high) {
+        high -= 1;
+    }
+    &text[low..high]
+}
+
 fn find_meta_description(html: &str) -> Option<String> {
     let index = html.find("name=\"description\"")?;
-    let window = &html[index.saturating_sub(400)..];
+    let window = char_window(html, index.saturating_sub(400), html.len());
     attribute(window, "content=")
 }
 
@@ -232,7 +244,7 @@ fn find_title(html: &str) -> Option<String> {
 fn find_difficulty(html: &str) -> Option<String> {
     let lower = html.to_lowercase();
     let index = lower.find("difficulty")?;
-    let window = &html[index..html.len().min(index + 200)];
+    let window = char_window(html, index, index + 200);
     let digits: String = window
         .chars()
         .skip_while(|c| !c.is_ascii_digit())
@@ -365,6 +377,23 @@ mod tests {
     fn crucial_steamhunters_empty_html_yields_no_summary() {
         let guide = parse_steamhunters_html("<html></html>", "u".to_owned());
         assert!(guide.summary.is_empty());
+    }
+
+    #[test]
+    fn crucial_steamhunters_survives_multibyte_before_meta() {
+        let html = format!(
+            "{}<meta name=\"description\" content=\"ok\">",
+            "€".repeat(200)
+        );
+        let guide = parse_steamhunters_html(&html, "u".to_owned());
+        assert_eq!(guide.summary, "ok");
+    }
+
+    #[test]
+    fn crucial_steamhunters_survives_multibyte_before_difficulty() {
+        let html = format!("{}difficulty 7/10 {}", "€".repeat(100), "€".repeat(200));
+        let guide = parse_steamhunters_html(&html, "u".to_owned());
+        assert_eq!(guide.difficulty, "7/10");
     }
 
     #[test]
