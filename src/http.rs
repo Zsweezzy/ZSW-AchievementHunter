@@ -1,8 +1,31 @@
+use std::io::Read;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 const USER_AGENT: &str = "achievement-hunter/0.1 (+https://github.com/Zsweezzy/achievement-hunter)";
+const MAX_BODY: u64 = 16 * 1024 * 1024;
+
+fn request_failed(error: reqwest::Error) -> String {
+    format!("request failed: {}", error.without_url())
+}
+
+fn read_body(response: reqwest::blocking::Response) -> Result<Vec<u8>, String> {
+    let mut buffer = Vec::new();
+    response
+        .take(MAX_BODY + 1)
+        .read_to_end(&mut buffer)
+        .map_err(|e| format!("body read failed: {e}"))?;
+    if buffer.len() as u64 > MAX_BODY {
+        return Err(format!("response exceeds {MAX_BODY} bytes"));
+    }
+    Ok(buffer)
+}
+
+fn read_text(response: reqwest::blocking::Response) -> Result<String, String> {
+    let bytes = read_body(response)?;
+    String::from_utf8(bytes).map_err(|e| format!("body not utf-8: {e}"))
+}
 
 static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 
@@ -31,17 +54,12 @@ pub fn encode_query(input: &str) -> String {
 }
 
 pub fn get_text(url: &str) -> Result<String, String> {
-    let response = client()
-        .get(url)
-        .send()
-        .map_err(|e| format!("request failed: {e}"))?;
+    let response = client().get(url).send().map_err(request_failed)?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("http {status}"));
     }
-    response
-        .text()
-        .map_err(|e| format!("body read failed: {e}"))
+    read_text(response)
 }
 
 pub fn get_json(url: &str) -> Result<serde_json::Value, String> {
@@ -57,11 +75,9 @@ pub fn get_json_with_headers(
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
-    let response = request.send().map_err(|e| format!("request failed: {e}"))?;
+    let response = request.send().map_err(request_failed)?;
     let status = response.status();
-    let text = response
-        .text()
-        .map_err(|e| format!("body read failed: {e}"))?;
+    let text = read_text(response)?;
     if !status.is_success() {
         return Err(format!("http {status}"));
     }
@@ -77,11 +93,9 @@ pub fn post_json(
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
-    let response = request.send().map_err(|e| format!("request failed: {e}"))?;
+    let response = request.send().map_err(request_failed)?;
     let status = response.status();
-    let text = response
-        .text()
-        .map_err(|e| format!("body read failed: {e}"))?;
+    let text = read_text(response)?;
     if !status.is_success() {
         return Err(format!("http {status}"));
     }
@@ -92,17 +106,12 @@ pub fn download(url: &str, dest: &Path) -> Result<(), String> {
     if let Some(dir) = dest.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("mkdir failed: {e}"))?;
     }
-    let response = client()
-        .get(url)
-        .send()
-        .map_err(|e| format!("request failed: {e}"))?;
+    let response = client().get(url).send().map_err(request_failed)?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("http {status}"));
     }
-    let bytes = response
-        .bytes()
-        .map_err(|e| format!("body read failed: {e}"))?;
+    let bytes = read_body(response)?;
     if bytes.is_empty() {
         return Err("empty body".to_owned());
     }
