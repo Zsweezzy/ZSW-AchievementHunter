@@ -75,3 +75,46 @@ the user annotate achievements, reorder them, and draw a flowgraph of them.
   than erroring, so a broken scrape degrades instead of failing the app.
 - Flowgraph and sort are per-install, not per-user-profile.
 - No screenshot-based visual test; CI runs the headless render test instead.
+
+## Security review
+
+Scope: this application only, local desktop threat model. Reviewed surfaces are
+credential handling, network I/O, untrusted response parsing, filesystem
+writes, and the local Steam files we read.
+
+Fixed:
+
+- **Provider parsers panicked on multi-byte HTML.** `find_meta_description` and
+  `find_difficulty` sliced the page at fixed byte offsets, which lands
+  mid-character on any page with non-ASCII text before the target. The panic
+  happened in the worker thread and the guide was silently lost.
+  (`bugfix/provider-robustness`)
+- **Steam API key leaked into error messages.** The key travels in the query
+  string, and `reqwest`'s error `Display` embeds the request URL, so a failed
+  request put the key in the status bar. Errors are now formatted with
+  `Error::without_url()`.
+- **Unbounded response bodies.** Every body read is now capped at 16 MiB.
+  (`bugfix/http-error-hardening`)
+
+Accepted, with rationale:
+
+- **Font loading reads an arbitrary path.** The path is typed by the user for
+  their own machine; there is no privilege boundary crossed.
+- **Cover art URLs come from SteamGridDB's response,** so the app will fetch
+  whatever URL that API returns. It only ever writes to `art_path(appid)`
+  (derived from a `u32` app id), so there is no path traversal, and the request
+  is a plain GET. Restricting the host was rejected because it would break
+  legitimate custom grids.
+- **Downloaded images are decoded by the `image` crate.** Decoder memory-safety
+  is upstream's responsibility; responses are size-capped as above.
+- **`steam.rs` passes the API key in the URL query string.** That is the Steam
+  Web API's contract; requests are TLS-only and the key is never logged.
+- **Deeply nested VDF input could recurse far**, but the only VDF files we read
+  are ones the local Steam client wrote.
+- **Backups use one-second timestamp resolution**, so two writes inside the
+  same second overwrite the same backup file. The autosave debounce makes this
+  unreachable in practice.
+
+No `unsafe` outside tests, no `unwrap`/`expect`/`panic!` outside tests, and no
+debug printing that could leak credentials.
+
