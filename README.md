@@ -38,14 +38,17 @@ no webview, no bundled browser — one native executable.
 Games, achievements, and cover art are fetched lazily the first time a page is
 opened, not at startup.
 
-### Guide sources that no longer work
+### Guide sources
 
-HowLongToBeat (WAF) and PSNProfiles (Cloudflare) both reject non-browser
-requests — PSNProfiles stays blocked even through a server-side renderer proxy —
-so no scraper ships for them; a PSNProfiles scraper would fail on every request.
-SteamHunters is the working default and supplies completion time, difficulty, and
-per-achievement data. Per-achievement *type* (story, online, missable) has no
-public source in any of these APIs, so it is not shown rather than guessed.
+SteamHunters is the working JSON API and supplies completion time, difficulty,
+and per-achievement data. HowLongToBeat (WAF) and PSNProfiles (Cloudflare) reject
+non-browser requests — PSNProfiles stays blocked even through a server-side
+renderer proxy and even with an imported, signed-in `cf_clearance` cookie — so no
+scraper ships for them. Each game page therefore links out to PSNProfiles' own
+guide search (and to HowLongToBeat when that source is enabled), which never fails
+because your browser does the work. Per-achievement *type* (story, online,
+missable) has no public source in any of these APIs, so it is not shown rather
+than guessed.
 
 ## Install
 

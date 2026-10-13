@@ -678,6 +678,19 @@ impl App {
                     }
                 });
             }
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("[psnprofiles]");
+                ui.weak("trophy guides for this title");
+                if ui
+                    .link("open")
+                    .on_hover_text(
+                        "psnprofiles.com blocks API access, so this opens their guide search for this title.",
+                    )
+                    .clicked()
+                {
+                    open = Some(psnprofiles_guide_url(&game.name));
+                }
+            });
         }
         if let Some(url) = open {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -1396,6 +1409,19 @@ fn art_widget(ui: &mut egui::Ui, name: &str, art: &str, size: egui::Vec2) -> egu
     }
 }
 
+fn psnprofiles_guide_url(name: &str) -> String {
+    let mut query = String::new();
+    for byte in name.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                query.push(byte as char);
+            }
+            _ => query.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    format!("https://psnprofiles.com/search/guides?q={query}")
+}
+
 fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();
@@ -1409,6 +1435,26 @@ fn truncate(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::model::Achievement;
+
+    #[test]
+    fn crucial_psnprofiles_link_encodes_the_title() {
+        assert_eq!(
+            psnprofiles_guide_url("Portal 2"),
+            "https://psnprofiles.com/search/guides?q=Portal%202"
+        );
+        assert_eq!(
+            psnprofiles_guide_url("NieR: Automata"),
+            "https://psnprofiles.com/search/guides?q=NieR%3A%20Automata"
+        );
+        assert_eq!(
+            psnprofiles_guide_url("Ori & the Blind Forest"),
+            "https://psnprofiles.com/search/guides?q=Ori%20%26%20the%20Blind%20Forest"
+        );
+        assert_eq!(
+            psnprofiles_guide_url("Ōkami"),
+            "https://psnprofiles.com/search/guides?q=%C5%8Ckami"
+        );
+    }
 
     fn sample_game() -> Game {
         Game {
