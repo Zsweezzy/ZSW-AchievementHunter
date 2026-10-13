@@ -119,11 +119,27 @@ pub fn sort_games(games: &mut [Game], mode: SortMode) {
     }
 }
 
-pub fn visible(game: &Game, installed_only: bool, hide_no_achievements: bool) -> bool {
-    if installed_only && !game.installed {
+#[derive(Clone, Copy, Default)]
+pub struct Filters {
+    pub installed_only: bool,
+    pub hide_no_achievements: bool,
+    pub hide_completed: bool,
+    pub hide_unstarted: bool,
+}
+
+pub fn visible(game: &Game, filters: Filters) -> bool {
+    if filters.installed_only && !game.installed {
         return false;
     }
-    !(hide_no_achievements && game.has_achievements == Some(false))
+    if filters.hide_no_achievements && game.has_achievements == Some(false) {
+        return false;
+    }
+    let total = game.achievements.len();
+    if total == 0 {
+        return true;
+    }
+    let unlocked = game.unlocked_count();
+    !((filters.hide_completed && unlocked == total) || (filters.hide_unstarted && unlocked == 0))
 }
 
 pub fn humanize_ago(seconds: u64) -> String {
@@ -204,6 +220,38 @@ mod tests {
             unlocked,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn crucial_visible_hides_completed_and_unstarted() {
+        let full = Game {
+            appid: 1,
+            achievements: vec![ach("a", true)],
+            ..Default::default()
+        };
+        let unstarted = Game {
+            appid: 2,
+            achievements: vec![ach("a", false)],
+            ..Default::default()
+        };
+        let partial = Game {
+            appid: 3,
+            achievements: vec![ach("a", true), ach("b", false)],
+            ..Default::default()
+        };
+        let unsynced = Game {
+            appid: 4,
+            ..Default::default()
+        };
+        let filters = Filters {
+            hide_completed: true,
+            hide_unstarted: true,
+            ..Default::default()
+        };
+        assert!(!visible(&full, filters));
+        assert!(!visible(&unstarted, filters));
+        assert!(visible(&partial, filters));
+        assert!(visible(&unsynced, filters));
     }
 
     #[test]
@@ -291,12 +339,20 @@ mod tests {
             installed: true,
             ..Default::default()
         };
-        assert!(!visible(&known_none, false, true));
-        assert!(visible(&known_none, false, false));
-        assert!(visible(&known_some, false, true));
-        assert!(visible(&unknown, false, true));
-        assert!(!visible(&unknown, true, false));
-        assert!(visible(&installed, true, false));
+        let hide = Filters {
+            hide_no_achievements: true,
+            ..Default::default()
+        };
+        let installed_only = Filters {
+            installed_only: true,
+            ..Default::default()
+        };
+        assert!(!visible(&known_none, hide));
+        assert!(visible(&known_none, Filters::default()));
+        assert!(visible(&known_some, hide));
+        assert!(visible(&unknown, hide));
+        assert!(!visible(&unknown, installed_only));
+        assert!(visible(&installed, installed_only));
     }
 
     #[test]

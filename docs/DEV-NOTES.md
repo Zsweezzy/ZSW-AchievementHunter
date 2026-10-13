@@ -91,6 +91,11 @@ draw a flowgraph of them.
   time via `prefetch` (queue) and `prefetch_busy` (single in-flight guard). This
   also downloads their achievement icons. It is sequential on purpose and reuses
   the same `busy` guard as a manual load.
+- **Library filters.** `model::Filters` carries installed-only, hide-no-achievements,
+  hide-completed (every achievement unlocked), and hide-unstarted (none
+  unlocked). A game with no cached achievements is never treated as 0% or 100% —
+  unsynced is not a value, so it survives both filters. This also means the two
+  percentage filters only bite once achievements have been fetched.
 - **Library sort lives in Settings.** The Games page keeps only Refresh, the
   game count, the two filters, and the guide-source toggles. Sort mode (playtime
   / last played / name) is a Settings row because it re-sorts `library.json`
