@@ -99,6 +99,7 @@ pub struct SchemaEntry {
     pub description: String,
     pub icon: String,
     pub icon_gray: String,
+    pub hidden: bool,
 }
 
 pub fn parse_schema(value: &Value, appid: u32) -> HashMap<String, SchemaEntry> {
@@ -140,6 +141,7 @@ pub fn parse_schema(value: &Value, appid: u32) -> HashMap<String, SchemaEntry> {
                         .unwrap_or_default(),
                     appid,
                 ),
+                hidden: matches!(item.get("hidden").and_then(|v| v.as_u64()), Some(1)),
             },
         );
     }
@@ -171,6 +173,7 @@ pub fn apply_schema(achievements: &mut [Achievement], schema: &HashMap<String, S
         }
         achievement.icon = entry.icon.clone();
         achievement.icon_gray = entry.icon_gray.clone();
+        achievement.hidden = entry.hidden;
     }
 }
 
@@ -312,7 +315,7 @@ mod tests {
     fn crucial_schema_parses_names_icons_and_percentages_source() {
         let value: Value = serde_json::from_str(
             r#"{"game":{"gameName":"Portal 2","availableGameStats":{"achievements":[
-                {"name":"ACH.WIN","displayName":"Winner","hidden":0,"description":"Win it",
+                {"name":"ACH.WIN","displayName":"Winner","hidden":1,"description":"Win it",
                  "icon":"https://cdn.example/a.jpg","icongray":"https://cdn.example/a_gray.jpg"},
                 {"name":"ACH.HASHONLY","displayName":"Hashed","description":"","icon":"abc123","icongray":""}]}}}"#,
         )
@@ -320,6 +323,8 @@ mod tests {
         let schema = parse_schema(&value, 620);
         assert_eq!(schema.len(), 2);
         assert_eq!(schema["ACH.WIN"].display_name, "Winner");
+        assert!(schema["ACH.WIN"].hidden);
+        assert!(!schema["ACH.HASHONLY"].hidden);
         assert_eq!(schema["ACH.WIN"].icon, "https://cdn.example/a.jpg");
         assert_eq!(
             schema["ACH.HASHONLY"].icon,

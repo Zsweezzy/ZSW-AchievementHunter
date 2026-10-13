@@ -14,10 +14,13 @@ no webview, no bundled browser — one native executable.
 - **Library grid** — every owned Steam game with cover art, playtime, and
   completion percentage. The grid reflows to more columns as the window widens.
   Refresh on demand, filter to installed games only, and hide games that have no
-  achievements. Sort by playtime, last played, or name.
+  achievements. Sort by playtime, last played, or name. A game whose
+  achievements have not been fetched yet says so instead of showing `0 / 0`.
 - **Achievement view** — per-game achievement list with the game's own icon for
-  each achievement (dimmed when still locked), global unlock rates, and a note
-  field per achievement.
+  each achievement (dimmed when still locked), global unlock rates, a `hidden`
+  badge for achievements Steam hides until they are earned, and per-achievement
+  notes. Notes stay hidden until you right-click an achievement and pick
+  *Add / edit note*.
 - **Guides** — completion time, difficulty, and per-achievement data from the
   SteamHunters JSON API, plus a HowLongToBeat link. Toggle which sources are
   queried. A source that cannot be reached degrades to a link, never an error.
@@ -36,11 +39,11 @@ opened, not at startup.
 ### Guide sources that no longer work
 
 HowLongToBeat (WAF) and PSNProfiles (Cloudflare) both reject non-browser
-requests, so no scraper ships for them — a PSNProfiles scraper would fail on
-every request. SteamHunters is the working default and supplies completion time,
-difficulty, and per-achievement data. Per-achievement *type* (story, online,
-missable) has no public source in any of these APIs, so it is not shown rather
-than guessed.
+requests — PSNProfiles stays blocked even through a server-side renderer proxy —
+so no scraper ships for them; a PSNProfiles scraper would fail on every request.
+SteamHunters is the working default and supplies completion time, difficulty, and
+per-achievement data. Per-achievement *type* (story, online, missable) has no
+public source in any of these APIs, so it is not shown rather than guessed.
 
 ## Install
 
@@ -88,10 +91,14 @@ Stored under your platform data directory (override with
 | `sort.json` | Custom achievement ordering. |
 
 Achievement and cover-art images are cached under `cache/icons/` and
-`cache/art/` in the same tree.
+`cache/art/` in the same tree. Cover art is cached for every game; achievement
+icons are precached for installed games (one game at a time, after the library
+loads), so they are available offline once fetched.
 
 Backups are timestamped copies kept in the same directory tree, pruned to the
-retention count set in Settings.
+retention count set in Settings. Before each save the app copies the previous
+`settings.toml`, `library.json`, `flow.json`, and `sort.json` into the backup
+folder, keeping the newest N.
 
 ## Development
 

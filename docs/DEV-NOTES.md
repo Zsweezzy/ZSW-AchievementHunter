@@ -46,6 +46,12 @@ draw a flowgraph of them.
   carries a container-level `#[serde(default)]`. Without it, adding or removing
   a field makes deserialisation fail, `Store::load` silently falls back to
   `Settings::default()`, and the user's saved Steam API key is wiped.
+- **Refresh merges, never drops cached data.** `Store::replace_games` carries a
+  game's cached `achievements`, `art`, and `guides` across a refresh. The
+  owned-games payload carries no achievements, so when a fresh record has none
+  the cache is kept verbatim; a fresh record that *does* carry achievements
+  replaces the cache, and existing notes are re-applied by `api_name`. Removing
+  this rule makes every Refresh wipe every achievement and note.
 - **Comments stay out of `.rs`.** Enforced by convention and by review.
 
 ## Guide sources
@@ -60,8 +66,35 @@ draw a flowgraph of them.
 - **HowLongToBeat — link only.** Its search API is behind a WAF that rejects
   non-browser clients, so the app emits a link and never scrapes.
 - **PSNProfiles — not implemented.** Cloudflare blocks every request regardless
-  of user agent; a scraper would fail permanently. Achievement *type* (story,
-  online, missable) has no public source in any of these APIs and is not shown.
+  of user agent, and a server-side renderer proxy (`r.jina.ai`) gets the same
+  block, so no client-side fetch can succeed. Achievement *type* (story, online,
+  missable) has no public source in any of these APIs and is not shown.
+  SteamHunters' per-achievement `obtainability` field is `0` across every game
+  sampled, so it cannot stand in for a type either.
+
+## UI behaviour
+
+- **`hidden` achievements.** The `hidden` flag comes from the Steam
+  `GetSchemaForGame` payload (numeric `0`/`1`) and is stored on `Achievement`. It
+  is only known when a schema fetch succeeded, i.e. when a Steam API key is
+  present; with no key it stays `false` rather than being guessed.
+- **Notes are opt-in.** The note editor renders only for a row the user opened
+  from its right-click menu ("Add / edit note"); a non-empty note renders as weak
+  text under the description. The open row lives in `App::note_edit`.
+- **Unsynced counts.** A game with no cached achievements reads "achievements not
+  synced" (or "no achievements" when Steam says it has none) instead of a
+  misleading `0 / 0`.
+- **Locked/Unlocked toggles live in the game page**, next to the achievement
+  list, not on the library page.
+- **Installed-game precache.** `App::prefetch_installed` walks installed games
+  that have no cached achievements, once per session, and loads them one at a
+  time via `prefetch` (queue) and `prefetch_busy` (single in-flight guard). This
+  also downloads their achievement icons. It is sequential on purpose and reuses
+  the same `busy` guard as a manual load.
+- **Responsive grid.** Art cells are fixed-width and placed in
+  `ui.horizontal_wrapped`, so the grid reflows on resize; it is not an
+  `egui::Grid` (which stretches its columns to the window and leaves uneven
+  gaps).
 
 ## Environment / config
 
@@ -98,6 +131,8 @@ draw a flowgraph of them.
   erroring, so a broken source degrades instead of failing the app.
 - Flowgraph and sort are stored per app id, not per-user-profile.
 - No screenshot-based visual test; CI runs the headless render test instead.
+- The `hidden` badge needs a Steam API key: without one the schema is never
+  fetched, so no achievement is marked hidden.
 - Effective guide sources are SteamHunters and links outward; HowLongToBeat and
   PSNProfiles block non-browser requests (see "Guide sources").
 
