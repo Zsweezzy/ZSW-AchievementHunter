@@ -58,6 +58,20 @@ tutorials in several ways.
   A `bottom` inner margin of `0` makes a tab's bottom edge meet the panel edge,
   which is how the active tab appears to merge with the content below.
 - `ui.put(rect, widget) -> Response` places a widget into an exact rect.
+- `ui.horizontal` is `Layout::left_to_right(Align::Center)`, which centres each
+  item against the row height known *so far* — so the first item sits at the top
+  when a later item is taller. To vertically centre an item on a row whose height
+  is only known afterwards, allocate a placeholder first, then re-place the item
+  with `ui.put` at `Rect::from_center_size(pos2(placeholder.center().x,
+  row.response.rect.center().y), size)`. `ui.put` does not advance the cursor.
+- Fixed-width grid cells: `ui.allocate_ui_with_layout(vec2(W, H), Layout::top_down(Align::Min), …)`
+  inside `ui.horizontal_wrapped` reflows on resize; an `egui::Grid` stretches its
+  columns to the window width and produces uneven gaps on fullscreen.
+- `Response::interact(Sense)` adds interaction to an existing response, e.g. to
+  attach `.context_menu(...)` to a `Frame`'s response. Inside a menu,
+  `ui.close()` closes it.
+- `egui::Slider::new(&mut v, a..=b).fixed_decimals(2)` is the slider counterpart
+  to `DragValue`.
 - Headless testing: `egui::Context::default()` then
   `ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui))` and finally
   `.drop_without_applying_deltas()`. Skipping the drop panics on the pending
@@ -96,4 +110,8 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
 - New cached image: add the destination to `paths.rs`, then check
   `path.exists()` before building the `egui::Image`, and trigger the download
   from a `spawn_*` method guarded by the `*_requested` set so it fires once.
+- New per-achievement fact: parse it in `steam.rs` (`SchemaEntry` +
+  `apply_schema`), add the field to `model::Achievement` with the container
+  `#[serde(default)]`, and render it in `achievement_list`. Extend the
+  `crucial_schema_*` test with the new payload key.
 - New file location: add it to `paths.rs`; do not build paths inline.

@@ -2,12 +2,13 @@ use crate::model::{self, FlowGraph, FlowNode, Game, GameTab, GuideInfo, SortMode
 use crate::providers;
 use crate::steam;
 use crate::store::Store;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
 const ICON_SIZE: f32 = 64.0;
 const CELL_WIDTH: f32 = 162.0;
+const CELL_HEIGHT: f32 = 270.0;
 
 pub struct App {
     store: Store,
@@ -27,6 +28,9 @@ pub struct App {
     auto_achievements: HashSet<u32>,
     art_requested: HashSet<u32>,
     icons_requested: HashSet<u32>,
+    note_edit: Option<String>,
+    prefetch: VecDeque<u32>,
+    prefetch_busy: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -80,6 +84,9 @@ impl App {
             auto_achievements: HashSet::new(),
             art_requested: HashSet::new(),
             icons_requested: HashSet::new(),
+            note_edit: None,
+            prefetch: VecDeque::new(),
+            prefetch_busy: false,
         };
         app.status = app.ready_status();
         app
@@ -110,14 +117,18 @@ impl App {
                     self.spawn_art();
                 }
                 Msg::Achievements(appid, achievements, status) => {
+                    let count = achievements.len();
                     if let Some(game) = self.store.game_mut(appid) {
                         game.achievements = achievements;
                     }
                     self.dirty.library = true;
                     self.busy = false;
-                    if !status.is_empty() {
-                        self.status = status;
-                    }
+                    self.prefetch_busy = false;
+                    self.status = if status.is_empty() {
+                        format!("Loaded {count} achievements.")
+                    } else {
+                        status
+                    };
                     self.spawn_icons(appid);
                 }
                 Msg::Guides(appid, guides, status) => {
@@ -304,6 +315,30 @@ impl App {
         });
     }
 
+    fn prefetch_installed(&mut self) {
+        if !self.store.settings.has_steam_credentials() {
+            return;
+        }
+        for game in &self.store.games {
+            if game.installed
+                && game.has_achievements != Some(false)
+                && game.achievements.is_empty()
+                && !self.auto_achievements.contains(&game.appid)
+            {
+                self.auto_achievements.insert(game.appid);
+                self.prefetch.push_back(game.appid);
+            }
+        }
+        if self.prefetch_busy || self.busy {
+            return;
+        }
+        if let Some(appid) = self.prefetch.pop_front() {
+            self.prefetch_busy = true;
+            self.load_achievements(appid);
+            self.status = format!("Caching installed games, {} left...", self.prefetch.len());
+        }
+    }
+
     fn load_guides(&mut self, appid: u32) {
         let settings = self.store.settings.clone();
         let Some(game) = self.store.game(appid).cloned() else {
@@ -419,6 +454,7 @@ impl App {
             self.refresh();
         }
         self.spawn_art();
+        self.prefetch_installed();
         let installed_only = settings.installed_only;
         let hide_no_achievements = settings.hide_no_achievements;
         let sort_mode = settings.sort_mode;
@@ -444,12 +480,6 @@ impl App {
                     &mut self.store.settings.hide_no_achievements,
                     "Has achievements",
                 )
-                .changed();
-            filters_changed |= ui
-                .checkbox(&mut self.store.settings.filter_locked, "Locked")
-                .changed();
-            filters_changed |= ui
-                .checkbox(&mut self.store.settings.filter_unlocked, "Unlocked")
                 .changed();
         });
         ui.horizontal_wrapped(|ui| {
@@ -489,21 +519,28 @@ impl App {
             );
             return;
         }
-        let columns = ((ui.available_width() + 12.0) / (CELL_WIDTH + 12.0))
-            .floor()
-            .max(1.0) as usize;
-        let cells: Vec<(u32, String, String, usize, usize, u64)> = self
+        let cells: Vec<(u32, String, String, String, u64)> = self
             .store
             .games
             .iter()
             .filter(|g| model::visible(g, installed_only, hide_no_achievements))
             .map(|g| {
+                let progress = if !g.achievements.is_empty() {
+                    format!(
+                        "{} / {} achievements",
+                        g.unlocked_count(),
+                        g.achievements.len()
+                    )
+                } else if g.has_achievements == Some(false) {
+                    "no achievements".to_owned()
+                } else {
+                    "achievements not synced".to_owned()
+                };
                 (
                     g.appid,
                     g.name.clone(),
                     g.art.clone(),
-                    g.unlocked_count(),
-                    g.achievements.len(),
+                    progress,
                     g.last_played,
                 )
             })
@@ -512,14 +549,13 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                egui::Grid::new("games_grid")
-                    .num_columns(columns)
-                    .spacing(egui::vec2(14.0, 16.0))
-                    .show(ui, |ui| {
-                        for (index, (appid, name, art, unlocked, count, last_played)) in
-                            cells.iter().enumerate()
-                        {
-                            ui.vertical(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(14.0, 16.0);
+                    for (appid, name, art, progress, last_played) in &cells {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(CELL_WIDTH, CELL_HEIGHT),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
                                 let response = art_widget(ui, name, art, egui::vec2(150.0, 200.0));
                                 if response.clicked() {
                                     clicked = Some(*appid);
@@ -528,19 +564,17 @@ impl App {
                                 if ui.selectable_label(false, label).clicked() {
                                     clicked = Some(*appid);
                                 }
-                                ui.weak(format!("{unlocked} / {count} achievements"));
+                                ui.weak(progress.as_str());
                                 if sort_mode == SortMode::LastPlayed {
                                     ui.weak(format!(
                                         "played {}",
                                         model::humanize_ago(*last_played)
                                     ));
                                 }
-                            });
-                            if (index + 1) % columns == 0 {
-                                ui.end_row();
-                            }
-                        }
-                    });
+                            },
+                        );
+                    }
+                });
             });
         if let Some(appid) = clicked {
             self.selected = Some(appid);
@@ -567,11 +601,20 @@ impl App {
             back = ui.button("< Back").clicked();
             if let Some(game) = self.store.game(appid) {
                 ui.heading(game.name.as_str());
+                let progress = if !game.achievements.is_empty() {
+                    format!(
+                        "{} / {} achievements ({:.0}%)",
+                        game.unlocked_count(),
+                        game.achievements.len(),
+                        game.completion_percent()
+                    )
+                } else if game.has_achievements == Some(false) {
+                    "no achievements".to_owned()
+                } else {
+                    "achievements not synced".to_owned()
+                };
                 ui.label(format!(
-                    "{} / {} achievements ({:.0}%) \u{2022} {} hours \u{2022} played {}",
-                    game.unlocked_count(),
-                    game.achievements.len(),
-                    game.completion_percent(),
+                    "{progress} \u{2022} {} hours \u{2022} played {}",
                     game.playtime_minutes / 60,
                     model::humanize_ago(game.last_played)
                 ));
@@ -588,6 +631,21 @@ impl App {
         }
         if guides {
             self.load_guides(appid);
+        }
+        let mut filters_changed = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Show:");
+            filters_changed |= ui
+                .checkbox(&mut self.store.settings.filter_locked, "Locked")
+                .changed();
+            filters_changed |= ui
+                .checkbox(&mut self.store.settings.filter_unlocked, "Unlocked")
+                .changed();
+            ui.separator();
+            ui.weak("Right-click an achievement to add a note.");
+        });
+        if filters_changed {
+            self.dirty.settings = true;
         }
         let mut open: Option<String> = None;
         if let Some(game) = self.store.game(appid) {
@@ -620,6 +678,8 @@ impl App {
             self.store.settings.filter_unlocked,
         );
         let mut touched = false;
+        let mut close_edit = false;
+        let mut note_edit = self.note_edit.clone();
         let Some(game) = self.store.game_mut(appid) else {
             return;
         };
@@ -634,14 +694,23 @@ impl App {
                     if !model::passes_filter(achievement, show_locked, show_unlocked) {
                         continue;
                     }
-                    egui::Frame::NONE
+                    let editing = note_edit.as_deref() == Some(achievement.api_name.as_str());
+                    let mut icon_rect = None;
+                    let row = egui::Frame::NONE
                         .inner_margin(egui::Margin::symmetric(0, 10))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                achievement_icon(ui, appid, achievement);
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(ICON_SIZE, ICON_SIZE),
+                                    egui::Sense::hover(),
+                                );
+                                icon_rect = Some(rect);
                                 ui.vertical(|ui| {
                                     ui.horizontal_wrapped(|ui| {
                                         ui.strong(achievement.name.as_str());
+                                        if achievement.hidden {
+                                            ui.colored_label(ui.visuals().warn_fg_color, "hidden");
+                                        }
                                         if achievement.unlocked {
                                             ui.weak("\u{2714} unlocked");
                                         }
@@ -652,22 +721,49 @@ impl App {
                                     if !achievement.description.is_empty() {
                                         ui.label(achievement.description.as_str());
                                     }
-                                    if ui
-                                        .add(
-                                            egui::TextEdit::singleline(&mut achievement.note)
-                                                .hint_text("note")
-                                                .desired_width(f32::INFINITY),
-                                        )
-                                        .lost_focus()
-                                    {
-                                        touched = true;
+                                    if editing {
+                                        if ui
+                                            .add(
+                                                egui::TextEdit::singleline(&mut achievement.note)
+                                                    .hint_text("note")
+                                                    .desired_width(f32::INFINITY),
+                                            )
+                                            .lost_focus()
+                                        {
+                                            touched = true;
+                                            if achievement.note.is_empty() {
+                                                close_edit = true;
+                                            }
+                                        }
+                                    } else if !achievement.note.is_empty() {
+                                        ui.weak(achievement.note.as_str());
                                     }
                                 });
-                            });
+                            })
                         });
+                    if let Some(rect) = icon_rect {
+                        let centered = egui::Rect::from_center_size(
+                            egui::pos2(rect.center().x, row.response.rect.center().y),
+                            egui::vec2(ICON_SIZE, ICON_SIZE),
+                        );
+                        achievement_icon(ui, appid, achievement, centered);
+                    }
+                    let response = row.response.interact(egui::Sense::click());
+                    response.context_menu(|ui| {
+                        if ui.button("Add / edit note").clicked() {
+                            note_edit = Some(achievement.api_name.clone());
+                            ui.close();
+                        }
+                        if ui.button("Clear note").clicked() {
+                            achievement.note.clear();
+                            touched = true;
+                            ui.close();
+                        }
+                    });
                     ui.separator();
                 }
             });
+        self.note_edit = if close_edit { None } else { note_edit };
         if touched {
             self.dirty.library = true;
         }
@@ -1014,18 +1110,19 @@ impl App {
                     ui.label("Interface scale");
                     structural |= ui
                         .add(
-                            egui::DragValue::new(&mut settings.ui_scale)
-                                .range(0.75..=2.0)
-                                .speed(0.05)
+                            egui::Slider::new(&mut settings.ui_scale, 0.75..=2.0)
                                 .fixed_decimals(2),
                         )
                         .changed();
-                    if ui.button("Reset to 1.00").clicked() {
+                    if ui.button("Reset").clicked() {
                         settings.ui_scale = 1.0;
                         theme_dirty = true;
                     }
                     ui.separator();
-                    ui.label("Backups kept");
+                    ui.label("Backups kept").on_hover_text(
+                        "Before every save the app copies the previous settings.toml / library.json / \
+                         flow.json / sort.json into the backups folder and keeps the newest N.",
+                    );
                     structural |= ui
                         .add(egui::DragValue::new(&mut settings.backups_kept).range(1..=200))
                         .changed();
@@ -1121,6 +1218,9 @@ impl App {
             auto_achievements: HashSet::new(),
             art_requested: HashSet::new(),
             icons_requested: HashSet::new(),
+            note_edit: None,
+            prefetch: VecDeque::new(),
+            prefetch_busy: false,
         }
     }
 }
@@ -1181,10 +1281,14 @@ fn paint_tab(ui: &mut egui::Ui, style: &TabStyle, label: &str, active: bool) -> 
     response
 }
 
-fn achievement_icon(ui: &mut egui::Ui, appid: u32, achievement: &crate::model::Achievement) {
+fn achievement_icon(
+    ui: &mut egui::Ui,
+    appid: u32,
+    achievement: &crate::model::Achievement,
+    rect: egui::Rect,
+) {
     let gray = !achievement.unlocked;
     let path = crate::paths::icon_path(appid, &achievement.api_name, gray);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ICON_SIZE, ICON_SIZE), egui::Sense::hover());
     if path.exists() {
         ui.put(
             rect,
@@ -1292,6 +1396,7 @@ mod tests {
                     global_percent: Some(50.0),
                     icon: String::new(),
                     icon_gray: String::new(),
+                    hidden: false,
                     note: "my note".to_owned(),
                 },
                 Achievement {

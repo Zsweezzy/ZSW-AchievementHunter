@@ -85,13 +85,16 @@ impl Store {
                     let guides = std::mem::take(&mut existing.guides);
                     let old_achievements = std::mem::take(&mut existing.achievements);
                     let notes: HashMap<String, String> = old_achievements
-                        .into_iter()
+                        .iter()
                         .filter(|a| !a.note.is_empty())
-                        .map(|a| (a.api_name, a.note))
+                        .map(|a| (a.api_name.clone(), a.note.clone()))
                         .collect();
                     *existing = game;
                     existing.art = art;
                     existing.guides = guides;
+                    if existing.achievements.is_empty() {
+                        existing.achievements = old_achievements;
+                    }
                     for achievement in &mut existing.achievements {
                         if let Some(note) = notes.get(&achievement.api_name) {
                             achievement.note = note.clone();
@@ -215,6 +218,25 @@ mod tests {
         assert_eq!(merged.guides.len(), 1);
         assert_eq!(merged.achievements[0].note, "my note");
         assert!(merged.achievements[0].unlocked);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crucial_refresh_without_achievements_keeps_cache() {
+        let (_guard, dir, mut store) = temp_store("keep-cache");
+        let mut existing = game(620, 100);
+        existing.achievements.push(Achievement {
+            api_name: "win".to_owned(),
+            unlocked: true,
+            note: "keep me".to_owned(),
+            ..Default::default()
+        });
+        store.games = vec![existing];
+        store.replace_games(vec![game(620, 200)]);
+        let merged = store.game(620).unwrap();
+        assert_eq!(merged.achievements.len(), 1);
+        assert!(merged.achievements[0].unlocked);
+        assert_eq!(merged.achievements[0].note, "keep me");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

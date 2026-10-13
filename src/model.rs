@@ -11,6 +11,7 @@ pub struct Achievement {
     pub global_percent: Option<f32>,
     pub icon: String,
     pub icon_gray: String,
+    pub hidden: bool,
     pub note: String,
 }
 
