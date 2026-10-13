@@ -117,6 +117,16 @@ draw a flowgraph of them.
   Regression test: `app::tests::crucial_library_grid_cells_are_flush` reads the
   painted artwork rectangles out of the headless `FullOutput` and asserts the
   arithmetic x/y grid; it fails if any cell's content can influence its size.
+- **Cell hover is the cell's job, not the artwork's.** The whole cell is one
+  `Sense::click()` rect (with a pointing-hand cursor) and the artwork is
+  deliberately *not* interactive. egui hovers only the single topmost
+  click/drag widget plus non-interactive widgets above it, so giving the
+  artwork its own `Sense::click` made it the top hit and the cell stopped
+  being hovered over the art — the highlight vanished exactly where the user's
+  pointer was. The hover fill is a translucent tint of
+  `visuals.selection.bg_fill` painted *over* the artwork rect (a fill behind
+  the cell rect only shows as an off-centre block in the padding). Regression
+  test: `app::tests::crucial_library_cell_stays_hoverable_over_the_artwork`.
 
 ## Environment / config
 
