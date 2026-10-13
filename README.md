@@ -14,7 +14,8 @@ no webview, no bundled browser — one native executable.
 - **Library grid** — every owned Steam game with cover art, playtime, and
   completion percentage. The grid reflows to more columns as the window widens.
   Refresh on demand, filter to installed games only, and hide games that have no
-  achievements. Sort by playtime, last played, or name (set in Settings). A game
+  achievements, that you have already finished (100%), or that you have not
+  started (0%). Sort by playtime, last played, or name (set in Settings). A game
   whose achievements have not been fetched yet says so instead of showing
   `0 / 0`.
 - **Achievement view** — per-game achievement list with the game's own icon for

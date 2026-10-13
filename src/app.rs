@@ -455,15 +455,19 @@ impl App {
         }
         self.spawn_art();
         self.prefetch_installed();
-        let installed_only = settings.installed_only;
-        let hide_no_achievements = settings.hide_no_achievements;
+        let filters = model::Filters {
+            installed_only: settings.installed_only,
+            hide_no_achievements: settings.hide_no_achievements,
+            hide_completed: settings.hide_completed,
+            hide_unstarted: settings.hide_unstarted,
+        };
         let sort_mode = settings.sort_mode;
         let total = self.store.games.len();
         let shown = self
             .store
             .games
             .iter()
-            .filter(|g| model::visible(g, installed_only, hide_no_achievements))
+            .filter(|g| model::visible(g, filters))
             .count();
         let mut refresh = false;
         let mut filters_changed = false;
@@ -480,6 +484,14 @@ impl App {
                     &mut self.store.settings.hide_no_achievements,
                     "Has achievements",
                 )
+                .changed();
+            filters_changed |= ui
+                .checkbox(&mut self.store.settings.hide_completed, "Hide 100%")
+                .on_hover_text("Hide games with every achievement unlocked")
+                .changed();
+            filters_changed |= ui
+                .checkbox(&mut self.store.settings.hide_unstarted, "Hide 0%")
+                .on_hover_text("Hide games with no achievement unlocked yet")
                 .changed();
         });
         ui.horizontal_wrapped(|ui| {
@@ -513,7 +525,7 @@ impl App {
             .store
             .games
             .iter()
-            .filter(|g| model::visible(g, installed_only, hide_no_achievements))
+            .filter(|g| model::visible(g, filters))
             .map(|g| {
                 let progress = if !g.achievements.is_empty() {
                     format!(
