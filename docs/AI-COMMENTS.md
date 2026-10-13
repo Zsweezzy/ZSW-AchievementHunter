@@ -46,6 +46,18 @@ tutorials in several ways.
   `.corner_radius`, `.interact(egui::Sense::click())`. For `file://` art to
   load, `egui_extras` needs the `image` **and** `file` features.
 - `egui::DragValue::range(...)`, `ui.color_edit_button_srgb(&mut [u8; 3])`.
+- Painting a custom widget: `ui.allocate_exact_size(size, Sense::click())` returns
+  `(Rect, Response)`; draw with `ui.painter()`. `rect_filled(rect, radius, fill)`
+  takes a `CornerRadius`, which is **u8**-based (`CornerRadius::same(8)` or the
+  per-corner literal `{ nw, ne, sw, se }` for a top-only radius); `From<u8>` and
+  `From<f32>` both exist. `Margin` is likewise **i8**-based
+  (`Margin::same(i8)`, `Margin::symmetric(i8, i8)`).
+- Text galley: `ui.painter().layout_no_wrap(text, FontId, color) -> Arc<Galley>`
+  then `painter.galley(pos, galley, fallback_color)`.
+- A panel's background is set by its `Frame`: `Panel::top(id).frame(Frame::NONE.fill(color).inner_margin(margin))`.
+  A `bottom` inner margin of `0` makes a tab's bottom edge meet the panel edge,
+  which is how the active tab appears to merge with the content below.
+- `ui.put(rect, widget) -> Response` places a widget into an exact rect.
 - Headless testing: `egui::Context::default()` then
   `ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui))` and finally
   `.drop_without_applying_deltas()`. Skipping the drop panics on the pending
@@ -70,10 +82,18 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
 
 ## Where to make a change
 
-- New field on a persisted struct: add to `model.rs` or `settings.rs`, give it
-  a `#[serde(default)]`, and round-trip it in a `crucial_*` test.
+- New field on a persisted struct: add to `model.rs` or `settings.rs`, give the
+  **struct** a container-level `#[serde(default)]` (not just the new field), and
+  round-trip it in a `crucial_*` test. Missing that default wipes saved settings
+  on load — see the invariant in `DEV-NOTES.md`.
 - New data source: add to `providers.rs`, return a link-only `GuideInfo`
   instead of erroring, and keep the network call inside the `http.rs` helpers.
 - New UI action: read the current state from `App`, push a `Msg` to the worker
   thread, and apply the result in the `Msg` handler in `draw`.
+- New tab: top-level tabs are the `Tab` enum (Games, Settings); per-game
+  sub-tabs are `GameTab` (Achievements, Flow, Sort). Both bars are drawn by the
+  shared `paint_tab` helper with a `TabStyle`.
+- New cached image: add the destination to `paths.rs`, then check
+  `path.exists()` before building the `egui::Image`, and trigger the download
+  from a `spawn_*` method guarded by the `*_requested` set so it fires once.
 - New file location: add it to `paths.rs`; do not build paths inline.

@@ -101,8 +101,7 @@ impl Store {
                 None => self.games.push(game),
             }
         }
-        self.games
-            .sort_by_key(|a| std::cmp::Reverse(a.playtime_minutes));
+        crate::model::sort_games(&mut self.games, self.settings.sort_mode);
     }
 }
 

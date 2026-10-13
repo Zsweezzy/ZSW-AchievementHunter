@@ -1,3 +1,4 @@
+use crate::model::SortMode;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,6 +43,7 @@ impl Theme {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct FontSettings {
     pub proportional_path: String,
     pub monospace_path: String,
@@ -61,6 +63,7 @@ impl Default for FontSettings {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Settings {
     pub steam_api_key: String,
     pub steam_id: String,
@@ -71,8 +74,10 @@ pub struct Settings {
     pub filter_locked: bool,
     pub filter_unlocked: bool,
     pub installed_only: bool,
+    pub hide_no_achievements: bool,
+    pub sort_mode: SortMode,
     pub backups_kept: usize,
-    pub grid_columns: usize,
+    pub ui_scale: f32,
     pub theme: Theme,
     pub fonts: FontSettings,
 }
@@ -84,13 +89,15 @@ impl Default for Settings {
             steam_id: String::new(),
             steamgriddb_key: String::new(),
             use_steamgriddb: true,
-            guide_hltb: true,
-            guide_steamhunters: false,
+            guide_hltb: false,
+            guide_steamhunters: true,
             filter_locked: true,
             filter_unlocked: true,
             installed_only: false,
+            hide_no_achievements: true,
+            sort_mode: SortMode::Playtime,
             backups_kept: 20,
-            grid_columns: 6,
+            ui_scale: 1.0,
             theme: Theme::tokyo_night(),
             fonts: FontSettings::default(),
         }
@@ -123,11 +130,17 @@ impl Settings {
     pub fn apply(&self, ctx: &egui::Context) {
         self.fonts.install(ctx);
         ctx.set_theme(egui::ThemePreference::Dark);
+        ctx.set_zoom_factor(self.ui_scale.clamp(0.6, 2.5));
         let theme = self.theme.clone();
         let fonts = self.fonts.clone();
         ctx.all_styles_mut(move |style| {
             theme.apply_to(&mut style.visuals);
             fonts.apply_to_styles(&mut style.text_styles);
+            style.spacing.item_spacing = egui::vec2(12.0, 10.0);
+            style.spacing.button_padding = egui::vec2(14.0, 8.0);
+            style.spacing.interact_size.y = 30.0;
+            style.spacing.menu_margin = egui::Margin::same(10);
+            style.visuals.window_corner_radius = 8.into();
         });
     }
 }

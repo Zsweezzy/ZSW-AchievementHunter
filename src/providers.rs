@@ -20,20 +20,28 @@ pub fn steamhunters_url(appid: u32) -> String {
     format!("https://steamhunters.com/apps/{appid}")
 }
 
+pub fn steamhunters_app_url(appid: u32) -> String {
+    format!("https://steamhunters.com/api/apps/{appid}")
+}
+
+pub fn steamhunters_achievements_url(appid: u32) -> String {
+    format!("https://steamhunters.com/api/apps/{appid}/achievements")
+}
+
 pub fn fetch_guides(game: &Game, settings: &Settings) -> (Vec<GuideInfo>, Vec<String>) {
     let mut guides = Vec::new();
     let mut errors = Vec::new();
-    if settings.guide_hltb {
-        let (guide, error) = howlongtobeat(game);
-        if let Some(error) = error {
-            errors.push(format!("howlongtobeat: {error}"));
-        }
-        guides.push(guide);
-    }
     if settings.guide_steamhunters {
         let (guide, error) = steamhunters(game);
         if let Some(error) = error {
             errors.push(format!("steamhunters: {error}"));
+        }
+        guides.push(guide);
+    }
+    if settings.guide_hltb {
+        let (guide, error) = howlongtobeat(game);
+        if let Some(error) = error {
+            errors.push(format!("howlongtobeat: {error}"));
         }
         guides.push(guide);
     }
@@ -172,11 +180,14 @@ fn fmt_hours(hours: Option<f32>) -> String {
 
 fn steamhunters(game: &Game) -> (GuideInfo, Option<String>) {
     let url = steamhunters_url(game.appid);
-    match crate::http::get_text(&url) {
-        Ok(html) => {
-            let guide = parse_steamhunters_html(&html, url);
+    match crate::http::get_json_with_headers(
+        &steamhunters_app_url(game.appid),
+        &[("Accept", "application/json")],
+    ) {
+        Ok(value) => {
+            let guide = parse_steamhunters_app(&value, &game.name, url);
             let error = if guide.summary.is_empty() {
-                Some("page reached but no summary parsed".to_owned())
+                Some("no stats parsed".to_owned())
             } else {
                 None
             };
@@ -195,66 +206,99 @@ fn steamhunters(game: &Game) -> (GuideInfo, Option<String>) {
     }
 }
 
-pub fn parse_steamhunters_html(html: &str, url: String) -> GuideInfo {
-    let summary = find_meta_description(html)
-        .or_else(|| find_title(html))
-        .unwrap_or_default();
+pub fn parse_steamhunters_app(value: &Value, fallback_name: &str, url: String) -> GuideInfo {
+    let name = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(fallback_name);
+    let achievements = value
+        .get("achievementCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let completion = value
+        .get("medianCompletionTime")
+        .and_then(|v| v.as_f64())
+        .filter(|m| *m > 0.0)
+        .map(|m| ((m / 60.0) as f32 * 10.0).round() / 10.0);
+    let perfected = value
+        .get("playersPerfectedCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let started = value
+        .get("playersStartedCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let points = value.get("points").and_then(|v| v.as_u64()).unwrap_or(0);
+    let difficulty = steamhunters_difficulty(perfected, started);
+    let mut summary = format!("{name}: {achievements} achievements");
+    if let Some(hours) = completion {
+        summary.push_str(&format!(" \u{2022} ~{hours} h to complete"));
+    }
+    if !difficulty.is_empty() {
+        summary.push_str(&format!(" \u{2022} est. difficulty {difficulty}"));
+    }
+    if points > 0 {
+        summary.push_str(&format!(" \u{2022} {points} points"));
+    }
     GuideInfo {
         source: "steamhunters".to_owned(),
         url,
         summary,
-        difficulty: find_difficulty(html).unwrap_or_default(),
+        main_hours: completion,
+        completionist_hours: completion,
+        difficulty,
         fetched_at: now_secs(),
         ..Default::default()
     }
 }
 
-fn attribute(html: &str, key: &str) -> Option<String> {
-    let index = html.find(key)?;
-    let rest = &html[index + key.len()..];
-    let start = rest.find('"')? + 1;
-    let end = rest[start..].find('"')? + start;
-    Some(rest[start..end].to_owned())
-}
-
-fn char_window(text: &str, start: usize, end: usize) -> &str {
-    let mut low = start.min(text.len());
-    while low > 0 && !text.is_char_boundary(low) {
-        low -= 1;
+pub fn steamhunters_difficulty(perfected: u64, started: u64) -> String {
+    if started == 0 {
+        return String::new();
     }
-    let mut high = end.clamp(low, text.len());
-    while high > low && !text.is_char_boundary(high) {
-        high -= 1;
-    }
-    &text[low..high]
+    let rate = perfected as f64 / started as f64 * 100.0;
+    let word = match rate {
+        r if r >= 30.0 => "easy",
+        r if r >= 12.0 => "moderate",
+        r if r >= 4.0 => "hard",
+        r if r >= 1.0 => "very hard",
+        _ => "extreme",
+    };
+    format!("{word} ({rate:.1}% perfected)")
 }
 
-fn find_meta_description(html: &str) -> Option<String> {
-    let index = html.find("name=\"description\"")?;
-    let window = char_window(html, index.saturating_sub(400), html.len());
-    attribute(window, "content=")
+pub fn parse_steamhunters_achievements(value: &Value) -> Vec<(String, String, String, f32)> {
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let api_name = item.get("apiName").and_then(|v| v.as_str())?.to_owned();
+            Some((
+                api_name,
+                item.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                item.get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                item.get("steamPercentage")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32,
+            ))
+        })
+        .collect()
 }
 
-fn find_title(html: &str) -> Option<String> {
-    let start = html.find("<title>")? + "<title>".len();
-    let end = html[start..].find("</title>")? + start;
-    Some(html[start..end].trim().to_owned())
-}
-
-fn find_difficulty(html: &str) -> Option<String> {
-    let lower = html.to_lowercase();
-    let index = lower.find("difficulty")?;
-    let window = char_window(html, index, index + 200);
-    let digits: String = window
-        .chars()
-        .skip_while(|c| !c.is_ascii_digit())
-        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '/')
-        .collect();
-    if digits.is_empty() {
-        None
-    } else {
-        Some(digits)
-    }
+pub fn steamhunters_achievements(appid: u32) -> Result<Vec<(String, String, String, f32)>, String> {
+    let value = crate::http::get_json_with_headers(
+        &steamhunters_achievements_url(appid),
+        &[("Accept", "application/json")],
+    )?;
+    Ok(parse_steamhunters_achievements(&value))
 }
 
 pub fn steamgriddb_grid(name: &str, key: &str) -> Result<String, String> {
@@ -356,44 +400,61 @@ mod tests {
     fn crucial_hltb_always_carries_a_url() {
         assert!(hltb_search_url("Portal 2").ends_with("q=Portal+2"));
         assert_eq!(steamhunters_url(620), "https://steamhunters.com/apps/620");
+        assert_eq!(
+            steamhunters_app_url(620),
+            "https://steamhunters.com/api/apps/620"
+        );
     }
 
     #[test]
-    fn crucial_steamhunters_reads_meta_description() {
-        let html = r#"<html><head><meta name="description" content="Portal 2 achievements guide"></head></html>"#;
-        let guide = parse_steamhunters_html(html, "u".to_owned());
-        assert_eq!(guide.summary, "Portal 2 achievements guide");
+    fn crucial_steamhunters_app_summarises_stats() {
+        let value: Value = serde_json::from_str(
+            r#"{"appId":620,"name":"Portal 2","achievementCount":51,"points":10571,
+                "playersPerfectedCount":6684,"playersStartedCount":84197,
+                "medianCompletionTime":2011,"fastestCompletionTime":152}"#,
+        )
+        .unwrap();
+        let guide = parse_steamhunters_app(&value, "fallback", "u".to_owned());
+        assert_eq!(guide.main_hours, Some(33.5));
+        assert_eq!(guide.difficulty, "hard (7.9% perfected)");
+        assert!(guide.summary.contains("51 achievements"));
+        assert!(guide.summary.contains("~33.5 h to complete"));
+        assert!(guide.summary.contains("10571 points"));
         assert_eq!(guide.source, "steamhunters");
     }
 
     #[test]
-    fn crucial_steamhunters_falls_back_to_title() {
-        let html = "<html><head><title> Portal 2 - SteamHunters </title></head></html>";
-        let guide = parse_steamhunters_html(html, "u".to_owned());
-        assert_eq!(guide.summary, "Portal 2 - SteamHunters");
+    fn crucial_steamhunters_app_without_stats_still_has_a_name() {
+        let value: Value = serde_json::from_str(r#"{"appId":620}"#).unwrap();
+        let guide = parse_steamhunters_app(&value, "Portal 2", "u".to_owned());
+        assert_eq!(guide.main_hours, None);
+        assert!(guide.difficulty.is_empty());
+        assert!(guide.summary.starts_with("Portal 2:"));
     }
 
     #[test]
-    fn crucial_steamhunters_empty_html_yields_no_summary() {
-        let guide = parse_steamhunters_html("<html></html>", "u".to_owned());
-        assert!(guide.summary.is_empty());
+    fn crucial_difficulty_scales_with_perfect_rate() {
+        assert_eq!(steamhunters_difficulty(0, 0), "");
+        assert!(steamhunters_difficulty(90, 100).starts_with("easy"));
+        assert!(steamhunters_difficulty(25, 100).starts_with("moderate"));
+        assert!(steamhunters_difficulty(10, 100).starts_with("hard"));
+        assert!(steamhunters_difficulty(2, 100).starts_with("very hard"));
+        assert!(steamhunters_difficulty(1, 1000).starts_with("extreme"));
     }
 
     #[test]
-    fn crucial_steamhunters_survives_multibyte_before_meta() {
-        let html = format!(
-            "{}<meta name=\"description\" content=\"ok\">",
-            "€".repeat(200)
-        );
-        let guide = parse_steamhunters_html(&html, "u".to_owned());
-        assert_eq!(guide.summary, "ok");
-    }
-
-    #[test]
-    fn crucial_steamhunters_survives_multibyte_before_difficulty() {
-        let html = format!("{}difficulty 7/10 {}", "€".repeat(100), "€".repeat(200));
-        let guide = parse_steamhunters_html(&html, "u".to_owned());
-        assert_eq!(guide.difficulty, "7/10");
+    fn crucial_steamhunters_achievements_payload() {
+        let value: Value = serde_json::from_str(
+            r#"[{"achievementId":1,"apiName":"ACH.SURVIVE","name":"Wake Up Call",
+                "description":"Survive","steamPercentage":74.0,"points":21}]"#,
+        )
+        .unwrap();
+        let rows = parse_steamhunters_achievements(&value);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "ACH.SURVIVE");
+        assert_eq!(rows[0].1, "Wake Up Call");
+        assert_eq!(rows[0].3, 74.0);
+        assert!(parse_steamhunters_achievements(&serde_json::json!({})).is_empty());
     }
 
     #[test]
