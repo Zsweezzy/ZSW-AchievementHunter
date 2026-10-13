@@ -91,6 +91,11 @@ draw a flowgraph of them.
   time via `prefetch` (queue) and `prefetch_busy` (single in-flight guard). This
   also downloads their achievement icons. It is sequential on purpose and reuses
   the same `busy` guard as a manual load.
+- **Library sort lives in Settings.** The Games page keeps only Refresh, the
+  game count, the two filters, and the guide-source toggles. Sort mode (playtime
+  / last played / name) is a Settings row because it re-sorts `library.json`
+  itself; changing it marks both `settings` and `library` dirty so the choice
+  survives a restart.
 - **Responsive grid.** Art cells are fixed-width and placed in
   `ui.horizontal_wrapped`, so the grid reflows on resize; it is not an
   `egui::Grid` (which stretches its columns to the window and leaves uneven
