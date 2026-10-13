@@ -483,16 +483,6 @@ impl App {
                 .changed();
         });
         ui.horizontal_wrapped(|ui| {
-            ui.label("Sort:");
-            for mode in SortMode::ALL {
-                let active = self.store.settings.sort_mode == mode;
-                if ui.selectable_label(active, mode.label()).clicked() && !active {
-                    self.store.settings.sort_mode = mode;
-                    model::sort_games(&mut self.store.games, mode);
-                    self.dirty.library = true;
-                }
-            }
-            ui.separator();
             ui.label("Guides from:");
             filters_changed |= ui
                 .checkbox(&mut self.store.settings.guide_hltb, "HowLongToBeat")
@@ -1036,6 +1026,18 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut settings.guide_hltb, "Guides: HowLongToBeat");
                     ui.checkbox(&mut settings.guide_steamhunters, "Guides: SteamHunters");
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Library sort:");
+                    for mode in SortMode::ALL {
+                        let active = settings.sort_mode == mode;
+                        if ui.selectable_label(active, mode.label()).clicked() && !active {
+                            settings.sort_mode = mode;
+                            model::sort_games(&mut self.store.games, mode);
+                            self.dirty.settings = true;
+                            self.dirty.library = true;
+                        }
+                    }
                 });
                 ui.separator();
 
