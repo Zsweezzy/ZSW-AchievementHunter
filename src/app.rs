@@ -1,14 +1,19 @@
-use crate::model::{self, FlowGraph, FlowNode, Game, GuideInfo, Tab};
+use crate::model::{self, FlowGraph, FlowNode, Game, GameTab, GuideInfo, SortMode, Tab};
 use crate::providers;
 use crate::steam;
 use crate::store::Store;
+use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
+
+const ICON_SIZE: f32 = 64.0;
+const CELL_WIDTH: f32 = 162.0;
 
 pub struct App {
     store: Store,
     ctx: egui::Context,
     tab: Tab,
+    game_tab: GameTab,
     selected: Option<u32>,
     status: String,
     busy: bool,
@@ -16,10 +21,12 @@ pub struct App {
     rx: Receiver<Msg>,
     dirty: Dirty,
     save_at: Option<Instant>,
-    sort_game: Option<u32>,
-    flow_game: Option<u32>,
     flow_drag: Option<usize>,
     flow_link: Option<usize>,
+    auto_library: bool,
+    auto_achievements: HashSet<u32>,
+    art_requested: HashSet<u32>,
+    icons_requested: HashSet<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -59,6 +66,7 @@ impl App {
             store,
             ctx: cc.egui_ctx.clone(),
             tab: Tab::Games,
+            game_tab: GameTab::Achievements,
             selected: None,
             status: String::new(),
             busy: false,
@@ -66,13 +74,14 @@ impl App {
             rx,
             dirty: Dirty::default(),
             save_at: None,
-            sort_game: None,
-            flow_game: None,
             flow_drag: None,
             flow_link: None,
+            auto_library: false,
+            auto_achievements: HashSet::new(),
+            art_requested: HashSet::new(),
+            icons_requested: HashSet::new(),
         };
         app.status = app.ready_status();
-        app.spawn_art();
         app
     }
 
@@ -109,6 +118,7 @@ impl App {
                     if !status.is_empty() {
                         self.status = status;
                     }
+                    self.spawn_icons(appid);
                 }
                 Msg::Guides(appid, guides, status) => {
                     if let Some(game) = self.store.game_mut(appid) {
@@ -171,11 +181,14 @@ impl App {
             .store
             .games
             .iter()
-            .filter(|g| g.art.is_empty())
+            .filter(|g| g.art.is_empty() && !self.art_requested.contains(&g.appid))
             .map(|g| (g.appid, g.name.clone()))
             .collect();
         if missing.is_empty() {
             return;
+        }
+        for (appid, _) in &missing {
+            self.art_requested.insert(*appid);
         }
         let settings = self.store.settings.clone();
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
@@ -204,6 +217,43 @@ impl App {
         });
     }
 
+    fn spawn_icons(&mut self, appid: u32) {
+        if !self.icons_requested.insert(appid) {
+            return;
+        }
+        let jobs: Vec<(String, bool, String)> = self
+            .store
+            .game(appid)
+            .map(|game| {
+                game.achievements
+                    .iter()
+                    .flat_map(|a| {
+                        [
+                            (a.api_name.clone(), false, a.icon.clone()),
+                            (a.api_name.clone(), true, a.icon_gray.clone()),
+                        ]
+                    })
+                    .filter(|(_, _, url)| !url.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if jobs.is_empty() {
+            return;
+        }
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            for (api_name, gray, url) in jobs {
+                let dest = crate::paths::icon_path(appid, &api_name, gray);
+                if dest.exists() {
+                    continue;
+                }
+                if crate::http::download(&url, &dest).is_ok() {
+                    ctx.request_repaint();
+                }
+            }
+        });
+    }
+
     fn load_achievements(&mut self, appid: u32) {
         let settings = self.store.settings.clone();
         if !settings.has_steam_credentials() {
@@ -223,9 +273,30 @@ impl App {
                         Vec::new()
                     }
                 };
-            if let Ok(percentages) = steam::global_percentages(appid) {
-                for achievement in &mut achievements {
-                    achievement.global_percent = percentages.get(&achievement.api_name).copied();
+            if let Ok(schema) = steam::schema(&settings.steam_api_key, appid) {
+                steam::apply_schema(&mut achievements, &schema);
+            } else if status.is_empty() {
+                status = "Loaded achievements without names: the game schema was unavailable."
+                    .to_owned();
+            }
+            match steam::global_percentages(appid) {
+                Ok(percentages) => {
+                    for achievement in &mut achievements {
+                        achievement.global_percent =
+                            percentages.get(&achievement.api_name).copied();
+                    }
+                }
+                Err(_) => {
+                    if let Ok(rows) = providers::steamhunters_achievements(appid) {
+                        let percentages: std::collections::HashMap<String, f32> = rows
+                            .into_iter()
+                            .map(|(api, _, _, percent)| (api, percent))
+                            .collect();
+                        for achievement in &mut achievements {
+                            achievement.global_percent =
+                                percentages.get(&achievement.api_name).copied();
+                        }
+                    }
                 }
             }
             let _ = tx.send(Msg::Achievements(appid, achievements, status));
@@ -284,72 +355,125 @@ impl App {
     }
 
     fn tab_bar(&mut self, ui: &mut egui::Ui) {
+        let style = TabStyle {
+            base_fill: ui.visuals().widgets.inactive.bg_fill,
+            hover_fill: ui.visuals().widgets.inactive.bg_fill.linear_multiply(1.6),
+            active_fill: ui.visuals().panel_fill,
+            text: ui.visuals().weak_text_color(),
+            active_text: ui.visuals().text_color(),
+            accent: ui.visuals().hyperlink_color,
+            radius: egui::CornerRadius::same(8),
+            active_radius: egui::CornerRadius {
+                nw: 9,
+                ne: 9,
+                sw: 0,
+                se: 0,
+            },
+            height: 36.0,
+            accent_line: true,
+        };
+        let mut clicked = None;
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
             for tab in Tab::ALL {
-                if ui.selectable_label(self.tab == tab, tab.label()).clicked() {
-                    self.tab = tab;
+                if paint_tab(ui, &style, tab.label(), self.tab == tab).clicked() {
+                    clicked = Some(tab);
                 }
             }
         });
+        if let Some(tab) = clicked {
+            self.tab = tab;
+        }
     }
 
-    fn pick_game(&mut self, ui: &mut egui::Ui, salt: &str) -> Option<u32> {
-        if self.store.games.is_empty() {
-            return None;
-        }
-        let mut selected = if salt == "sort" {
-            self.sort_game
-        } else {
-            self.flow_game
+    fn sub_tab_bar(&mut self, ui: &mut egui::Ui) {
+        let style = TabStyle {
+            base_fill: egui::Color32::TRANSPARENT,
+            hover_fill: ui.visuals().widgets.hovered.weak_bg_fill,
+            active_fill: ui.visuals().widgets.inactive.bg_fill,
+            text: ui.visuals().weak_text_color(),
+            active_text: ui.visuals().text_color(),
+            accent: ui.visuals().hyperlink_color,
+            radius: egui::CornerRadius::same(7),
+            active_radius: egui::CornerRadius::same(7),
+            height: 30.0,
+            accent_line: false,
         };
-        if selected
-            .map(|id| self.store.game(id).is_none())
-            .unwrap_or(true)
-        {
-            selected = Some(self.store.games[0].appid);
-        }
-        let current = selected
-            .and_then(|id| self.store.game(id))
-            .map(|g| g.name.clone())
-            .unwrap_or_default();
-        let games = self.store.games.clone();
-        egui::ComboBox::from_id_salt(format!("pick_{salt}"))
-            .selected_text(current)
-            .width(320.0)
-            .show_ui(ui, |ui| {
-                for game in &games {
-                    ui.selectable_value(&mut selected, Some(game.appid), game.name.as_str());
+        let mut clicked = None;
+        ui.horizontal(|ui| {
+            for tab in GameTab::ALL {
+                if paint_tab(ui, &style, tab.label(), self.game_tab == tab).clicked() {
+                    clicked = Some(tab);
                 }
-            });
-        if salt == "sort" {
-            self.sort_game = selected;
-        } else {
-            self.flow_game = selected;
+            }
+        });
+        if let Some(tab) = clicked {
+            self.game_tab = tab;
         }
-        selected
     }
 
     fn games_tab(&mut self, ui: &mut egui::Ui) {
+        let settings = self.store.settings.clone();
+        if !self.auto_library && self.store.games.is_empty() && settings.has_steam_credentials() {
+            self.auto_library = true;
+            self.refresh();
+        }
+        self.spawn_art();
+        let installed_only = settings.installed_only;
+        let hide_no_achievements = settings.hide_no_achievements;
+        let sort_mode = settings.sort_mode;
         let total = self.store.games.len();
-        let shown = if self.store.settings.installed_only {
-            self.store.games.iter().filter(|g| g.installed).count()
-        } else {
-            total
-        };
+        let shown = self
+            .store
+            .games
+            .iter()
+            .filter(|g| model::visible(g, installed_only, hide_no_achievements))
+            .count();
         let mut refresh = false;
+        let mut filters_changed = false;
         ui.horizontal_wrapped(|ui| {
             refresh = ui.button("Refresh library").clicked();
             ui.separator();
             ui.label(format!("{shown} / {total} games"));
             ui.separator();
-            ui.checkbox(&mut self.store.settings.installed_only, "Installed only");
-            ui.checkbox(&mut self.store.settings.filter_locked, "Locked");
-            ui.checkbox(&mut self.store.settings.filter_unlocked, "Unlocked");
+            filters_changed |= ui
+                .checkbox(&mut self.store.settings.installed_only, "Installed only")
+                .changed();
+            filters_changed |= ui
+                .checkbox(
+                    &mut self.store.settings.hide_no_achievements,
+                    "Has achievements",
+                )
+                .changed();
+            filters_changed |= ui
+                .checkbox(&mut self.store.settings.filter_locked, "Locked")
+                .changed();
+            filters_changed |= ui
+                .checkbox(&mut self.store.settings.filter_unlocked, "Unlocked")
+                .changed();
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Sort:");
+            for mode in SortMode::ALL {
+                let active = self.store.settings.sort_mode == mode;
+                if ui.selectable_label(active, mode.label()).clicked() && !active {
+                    self.store.settings.sort_mode = mode;
+                    model::sort_games(&mut self.store.games, mode);
+                    self.dirty.library = true;
+                }
+            }
             ui.separator();
             ui.label("Guides from:");
-            ui.checkbox(&mut self.store.settings.guide_hltb, "HowLongToBeat");
-            ui.checkbox(&mut self.store.settings.guide_steamhunters, "SteamHunters");
+            filters_changed |= ui
+                .checkbox(&mut self.store.settings.guide_hltb, "HowLongToBeat")
+                .changed();
+            filters_changed |= ui
+                .checkbox(&mut self.store.settings.guide_steamhunters, "SteamHunters")
+                .changed();
         });
+        if filters_changed {
+            self.dirty.settings = true;
+        }
         if refresh {
             self.refresh();
         }
@@ -365,13 +489,14 @@ impl App {
             );
             return;
         }
-        let columns = self.store.settings.grid_columns.max(1);
-        let installed_only = self.store.settings.installed_only;
-        let cells: Vec<(u32, String, String, usize, usize)> = self
+        let columns = ((ui.available_width() + 12.0) / (CELL_WIDTH + 12.0))
+            .floor()
+            .max(1.0) as usize;
+        let cells: Vec<(u32, String, String, usize, usize, u64)> = self
             .store
             .games
             .iter()
-            .filter(|g| !installed_only || g.installed)
+            .filter(|g| model::visible(g, installed_only, hide_no_achievements))
             .map(|g| {
                 (
                     g.appid,
@@ -379,6 +504,7 @@ impl App {
                     g.art.clone(),
                     g.unlocked_count(),
                     g.achievements.len(),
+                    g.last_played,
                 )
             })
             .collect();
@@ -388,9 +514,10 @@ impl App {
             .show(ui, |ui| {
                 egui::Grid::new("games_grid")
                     .num_columns(columns)
-                    .spacing(egui::vec2(12.0, 12.0))
+                    .spacing(egui::vec2(14.0, 16.0))
                     .show(ui, |ui| {
-                        for (index, (appid, name, art, unlocked, count)) in cells.iter().enumerate()
+                        for (index, (appid, name, art, unlocked, count, last_played)) in
+                            cells.iter().enumerate()
                         {
                             ui.vertical(|ui| {
                                 let response = art_widget(ui, name, art, egui::vec2(150.0, 200.0));
@@ -402,6 +529,12 @@ impl App {
                                     clicked = Some(*appid);
                                 }
                                 ui.weak(format!("{unlocked} / {count} achievements"));
+                                if sort_mode == SortMode::LastPlayed {
+                                    ui.weak(format!(
+                                        "played {}",
+                                        model::humanize_ago(*last_played)
+                                    ));
+                                }
                             });
                             if (index + 1) % columns == 0 {
                                 ui.end_row();
@@ -411,10 +544,22 @@ impl App {
             });
         if let Some(appid) = clicked {
             self.selected = Some(appid);
+            self.game_tab = GameTab::Achievements;
         }
     }
 
     fn game_detail(&mut self, ui: &mut egui::Ui, appid: u32) {
+        if !self.auto_achievements.contains(&appid)
+            && self.store.settings.has_steam_credentials()
+            && self
+                .store
+                .game(appid)
+                .map(|game| game.achievements.is_empty())
+                .unwrap_or(false)
+        {
+            self.auto_achievements.insert(appid);
+            self.load_achievements(appid);
+        }
         let mut back = false;
         let mut load = false;
         let mut guides = false;
@@ -423,11 +568,12 @@ impl App {
             if let Some(game) = self.store.game(appid) {
                 ui.heading(game.name.as_str());
                 ui.label(format!(
-                    "{} / {} achievements ({:.0}%) \u{2022} {} hours",
+                    "{} / {} achievements ({:.0}%) \u{2022} {} hours \u{2022} played {}",
                     game.unlocked_count(),
                     game.achievements.len(),
                     game.completion_percent(),
-                    game.playtime_minutes / 60
+                    game.playtime_minutes / 60,
+                    model::humanize_ago(game.last_played)
                 ));
             }
             load = ui.button("Load achievements").clicked();
@@ -458,7 +604,17 @@ impl App {
         if let Some(url) = open {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
+        ui.add_space(6.0);
+        self.sub_tab_bar(ui);
         ui.separator();
+        match self.game_tab {
+            GameTab::Achievements => self.achievement_list(ui, appid),
+            GameTab::Flow => self.flow_tab(ui, appid),
+            GameTab::Sort => self.sort_tab(ui, appid),
+        }
+    }
+
+    fn achievement_list(&mut self, ui: &mut egui::Ui, appid: u32) {
         let (show_locked, show_unlocked) = (
             self.store.settings.filter_locked,
             self.store.settings.filter_unlocked,
@@ -468,7 +624,7 @@ impl App {
             return;
         };
         if game.achievements.is_empty() {
-            ui.label("No achievement data cached. Press Load achievements.");
+            ui.label("No achievement data cached yet. Press Load achievements.");
             return;
         }
         egui::ScrollArea::vertical()
@@ -478,24 +634,37 @@ impl App {
                     if !model::passes_filter(achievement, show_locked, show_unlocked) {
                         continue;
                     }
-                    ui.horizontal(|ui| {
-                        ui.label(if achievement.unlocked { "[x]" } else { "[ ]" });
-                        ui.strong(achievement.name.as_str());
-                        if let Some(percent) = achievement.global_percent {
-                            ui.weak(format!("{percent:.1}% of players"));
-                        }
-                    });
-                    if !achievement.description.is_empty() {
-                        ui.label(achievement.description.as_str());
-                    }
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut achievement.note)
-                            .hint_text("note")
-                            .desired_width(f32::INFINITY),
-                    );
-                    if response.lost_focus() {
-                        touched = true;
-                    }
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin::symmetric(0, 10))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                achievement_icon(ui, appid, achievement);
+                                ui.vertical(|ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.strong(achievement.name.as_str());
+                                        if achievement.unlocked {
+                                            ui.weak("\u{2714} unlocked");
+                                        }
+                                        if let Some(percent) = achievement.global_percent {
+                                            ui.weak(format!("{percent:.1}% of players"));
+                                        }
+                                    });
+                                    if !achievement.description.is_empty() {
+                                        ui.label(achievement.description.as_str());
+                                    }
+                                    if ui
+                                        .add(
+                                            egui::TextEdit::singleline(&mut achievement.note)
+                                                .hint_text("note")
+                                                .desired_width(f32::INFINITY),
+                                        )
+                                        .lost_focus()
+                                    {
+                                        touched = true;
+                                    }
+                                });
+                            });
+                        });
                     ui.separator();
                 }
             });
@@ -504,11 +673,7 @@ impl App {
         }
     }
 
-    fn sort_tab(&mut self, ui: &mut egui::Ui) {
-        let Some(appid) = self.pick_game(ui, "sort") else {
-            ui.label("No games loaded. Refresh on the Games tab first.");
-            return;
-        };
+    fn sort_tab(&mut self, ui: &mut egui::Ui, appid: u32) {
         let rows: Vec<(String, String, bool)> = match self.store.game(appid) {
             Some(game) => {
                 let order = self.store.sort.get(&appid).cloned().unwrap_or_default();
@@ -564,11 +729,7 @@ impl App {
         }
     }
 
-    fn flow_tab(&mut self, ui: &mut egui::Ui) {
-        let Some(appid) = self.pick_game(ui, "flow") else {
-            ui.label("No games loaded. Refresh on the Games tab first.");
-            return;
-        };
+    fn flow_tab(&mut self, ui: &mut egui::Ui, appid: u32) {
         let mut seed = false;
         let mut clear = false;
         ui.horizontal_wrapped(|ui| {
@@ -850,16 +1011,26 @@ impl App {
 
                 ui.heading("Data");
                 ui.horizontal(|ui| {
-                    ui.label("Games per row");
+                    ui.label("Interface scale");
                     structural |= ui
-                        .add(egui::DragValue::new(&mut settings.grid_columns).range(1..=12))
+                        .add(
+                            egui::DragValue::new(&mut settings.ui_scale)
+                                .range(0.75..=2.0)
+                                .speed(0.05)
+                                .fixed_decimals(2),
+                        )
                         .changed();
+                    if ui.button("Reset to 1.00").clicked() {
+                        settings.ui_scale = 1.0;
+                        theme_dirty = true;
+                    }
                     ui.separator();
                     ui.label("Backups kept");
                     structural |= ui
                         .add(egui::DragValue::new(&mut settings.backups_kept).range(1..=200))
                         .changed();
                 });
+                ui.label("The game grid fills the window and adds columns as it widens.");
                 ui.label(format!(
                     "Data folder: {}",
                     crate::paths::data_dir().display()
@@ -902,7 +1073,18 @@ impl App {
         {
             self.selected = None;
         }
-        egui::Panel::top("ah_tabs").show(ui, |ui| self.tab_bar(ui));
+        egui::Panel::top("ah_tabs")
+            .frame(
+                egui::Frame::NONE
+                    .fill(ui.visuals().widgets.inactive.bg_fill)
+                    .inner_margin(egui::Margin {
+                        left: 10,
+                        right: 10,
+                        top: 6,
+                        bottom: 0,
+                    }),
+            )
+            .show(ui, |ui| self.tab_bar(ui));
         egui::Panel::bottom("ah_status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.busy {
@@ -913,8 +1095,6 @@ impl App {
         });
         egui::CentralPanel::default_margins().show(ui, |ui| match self.tab {
             Tab::Games => self.games_tab(ui),
-            Tab::Flow => self.flow_tab(ui),
-            Tab::Sort => self.sort_tab(ui),
             Tab::Settings => self.settings_tab(ui),
         });
         self.autosave(ui.ctx());
@@ -927,6 +1107,7 @@ impl App {
             store: Store::load(),
             ctx,
             tab: Tab::Games,
+            game_tab: GameTab::Achievements,
             selected: None,
             status: String::new(),
             busy: false,
@@ -934,12 +1115,98 @@ impl App {
             rx,
             dirty: Dirty::default(),
             save_at: None,
-            sort_game: None,
-            flow_game: None,
             flow_drag: None,
             flow_link: None,
+            auto_library: false,
+            auto_achievements: HashSet::new(),
+            art_requested: HashSet::new(),
+            icons_requested: HashSet::new(),
         }
     }
+}
+
+struct TabStyle {
+    base_fill: egui::Color32,
+    hover_fill: egui::Color32,
+    active_fill: egui::Color32,
+    text: egui::Color32,
+    active_text: egui::Color32,
+    accent: egui::Color32,
+    radius: egui::CornerRadius,
+    active_radius: egui::CornerRadius,
+    height: f32,
+    accent_line: bool,
+}
+
+fn paint_tab(ui: &mut egui::Ui, style: &TabStyle, label: &str, active: bool) -> egui::Response {
+    let font = egui::FontId::proportional(15.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font.clone(), style.text);
+    let size = egui::vec2((galley.size().x + 40.0).max(104.0), style.height);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let fill = if active {
+        style.active_fill
+    } else if response.hovered() {
+        style.hover_fill
+    } else {
+        style.base_fill
+    };
+    let radius = if active {
+        style.active_radius
+    } else {
+        style.radius
+    };
+    ui.painter().rect_filled(rect, radius, fill);
+    if active && style.accent_line {
+        ui.painter().line_segment(
+            [
+                rect.left_top() + egui::vec2(6.0, 1.0),
+                rect.right_top() + egui::vec2(-6.0, 1.0),
+            ],
+            egui::Stroke::new(2.0, style.accent),
+        );
+    }
+    let color = if active {
+        style.active_text
+    } else {
+        style.text
+    };
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, color);
+    ui.painter()
+        .galley(rect.center() - galley.size() * 0.5, galley, color);
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+fn achievement_icon(ui: &mut egui::Ui, appid: u32, achievement: &crate::model::Achievement) {
+    let gray = !achievement.unlocked;
+    let path = crate::paths::icon_path(appid, &achievement.api_name, gray);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ICON_SIZE, ICON_SIZE), egui::Sense::hover());
+    if path.exists() {
+        ui.put(
+            rect,
+            egui::Image::new(format!("file://{}", path.display()))
+                .fit_to_exact_size(egui::vec2(ICON_SIZE, ICON_SIZE))
+                .corner_radius(6.0),
+        );
+        return;
+    }
+    ui.painter()
+        .rect_filled(rect, 6.0, ui.visuals().widgets.inactive.bg_fill);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        if achievement.unlocked {
+            "\u{2714}"
+        } else {
+            "?"
+        },
+        egui::FontId::proportional(22.0),
+        ui.visuals().weak_text_color(),
+    );
 }
 
 fn hit_node(
@@ -1024,6 +1291,7 @@ mod tests {
                     unlock_time: Some(1),
                     global_percent: Some(50.0),
                     icon: String::new(),
+                    icon_gray: String::new(),
                     note: "my note".to_owned(),
                 },
                 Achievement {
@@ -1040,6 +1308,7 @@ mod tests {
                 main_hours: Some(10.0),
                 ..Default::default()
             }],
+            ..Default::default()
         }
     }
 
@@ -1075,10 +1344,8 @@ mod tests {
         app.store
             .sort
             .insert(620, vec!["B".to_owned(), "A".to_owned()]);
-        app.sort_game = Some(620);
-        app.flow_game = Some(620);
 
-        for tab in [Tab::Games, Tab::Flow, Tab::Sort, Tab::Settings] {
+        for tab in Tab::ALL {
             app.tab = tab;
             ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui))
                 .drop_without_applying_deltas();
@@ -1086,8 +1353,11 @@ mod tests {
 
         app.tab = Tab::Games;
         app.selected = Some(620);
-        ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui))
-            .drop_without_applying_deltas();
+        for game_tab in GameTab::ALL {
+            app.game_tab = game_tab;
+            ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui))
+                .drop_without_applying_deltas();
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

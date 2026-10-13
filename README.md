@@ -1,8 +1,8 @@
 # achievement-hunter
 
 A single-binary desktop companion for Steam achievement hunting. It shows your
-Steam library, pulls achievement progress, collects guides from HowLongToBeat
-and SteamHunters, caches cover art, and lets you take notes, reorder
+Steam library, pulls achievement progress and icons, reads completion time and
+guide data from SteamHunters, caches cover art, and lets you take notes, reorder
 achievements, and chart them as a flowgraph.
 
 Built with Rust, [egui](https://github.com/emilk/egui) and
@@ -12,18 +12,35 @@ no webview, no bundled browser — one native executable.
 ## Features
 
 - **Library grid** — every owned Steam game with cover art, playtime, and
-  completion percentage. Refresh on demand, filter to installed games only.
-- **Achievement view** — per-game achievement list with global unlock rates,
-  icons, and a note field per achievement.
-- **Guides** — HowLongToBeat times and SteamHunters guide data, with toggles
-  for which sites to query. When a site cannot be parsed you still get a link.
-- **Flowgraph tab** — draggable nodes, click-to-link edges, right-click to
-  delete. Layout is saved.
-- **Sort tab** — drag-and-drop reordering of achievements, saved per game.
-- **Themes and fonts** — Tokyo Night by default, with every color editable in
-  the settings tab. Load your own fonts by path.
+  completion percentage. The grid reflows to more columns as the window widens.
+  Refresh on demand, filter to installed games only, and hide games that have no
+  achievements. Sort by playtime, last played, or name.
+- **Achievement view** — per-game achievement list with the game's own icon for
+  each achievement (dimmed when still locked), global unlock rates, and a note
+  field per achievement.
+- **Guides** — completion time, difficulty, and per-achievement data from the
+  SteamHunters JSON API, plus a HowLongToBeat link. Toggle which sources are
+  queried. A source that cannot be reached degrades to a link, never an error.
+- **Flowgraph** — draggable nodes, click-to-link edges, right-click to delete.
+  Layout is saved per game.
+- **Sort** — drag-and-drop reordering of achievements, saved per game.
+- **Themes, fonts, and scale** — Tokyo Night by default, with every color
+  editable in the settings tab. Load your own fonts by path, and set a global
+  interface scale.
 - **Backups** — every persisted file is backed up before it is overwritten,
   with a configurable retention count.
+
+Games, achievements, and cover art are fetched lazily the first time a page is
+opened, not at startup.
+
+### Guide sources that no longer work
+
+HowLongToBeat (WAF) and PSNProfiles (Cloudflare) both reject non-browser
+requests, so no scraper ships for them — a PSNProfiles scraper would fail on
+every request. SteamHunters is the working default and supplies completion time,
+difficulty, and per-achievement data. Per-achievement *type* (story, online,
+missable) has no public source in any of these APIs, so it is not shown rather
+than guessed.
 
 ## Install
 
@@ -53,8 +70,8 @@ or paste both into the **Settings** tab inside the app. Environment variables
 are read on first launch; after that the stored values are used.
 
 Without a key the app still works: it scans your local Steam install for the
-game list and loads cover art from the Steam CDN, but achievement and guide
-data is limited.
+game list, loads cover art from the Steam CDN, and fetches SteamHunters guide
+data (that API is keyless), but per-achievement unlock state is not available.
 
 Do not commit your key. `settings.toml` is user data and is not tracked.
 
@@ -65,10 +82,13 @@ Stored under your platform data directory (override with
 
 | File | Contents |
 | --- | --- |
-| `settings.toml` | Theme, fonts, credentials, filters, grid options. |
+| `settings.toml` | Theme, fonts, interface scale, credentials, filters, sort mode. |
 | `library.json` | Games, achievements, notes, guide cache. |
 | `flow.json` | Flowgraph nodes and edges. |
 | `sort.json` | Custom achievement ordering. |
+
+Achievement and cover-art images are cached under `cache/icons/` and
+`cache/art/` in the same tree.
 
 Backups are timestamped copies kept in the same directory tree, pruned to the
 retention count set in Settings.

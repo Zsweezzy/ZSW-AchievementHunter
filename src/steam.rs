@@ -31,10 +31,18 @@ pub fn parse_owned_games(value: &Value) -> Vec<Game> {
                 .get("playtime_forever")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            let last_played = item
+                .get("rtime_last_played")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             Some(Game {
                 appid,
                 name,
                 playtime_minutes,
+                last_played,
+                has_achievements: item
+                    .get("has_community_visible_stats")
+                    .and_then(|v| v.as_bool()),
                 ..Default::default()
             })
         })
@@ -83,6 +91,97 @@ pub fn parse_achievements(value: &Value) -> Result<Vec<Achievement>, String> {
             }
         })
         .collect())
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SchemaEntry {
+    pub display_name: String,
+    pub description: String,
+    pub icon: String,
+    pub icon_gray: String,
+}
+
+pub fn parse_schema(value: &Value, appid: u32) -> HashMap<String, SchemaEntry> {
+    let mut out = HashMap::new();
+    let Some(items) = value
+        .get("game")
+        .and_then(|g| g.get("availableGameStats"))
+        .and_then(|s| s.get("achievements"))
+        .and_then(|v| v.as_array())
+    else {
+        return out;
+    };
+    for item in items {
+        let Some(api_name) = item.get("name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        out.insert(
+            api_name.to_owned(),
+            SchemaEntry {
+                display_name: item
+                    .get("displayName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(api_name)
+                    .to_owned(),
+                description: item
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                icon: icon_url(
+                    item.get("icon")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                    appid,
+                ),
+                icon_gray: icon_url(
+                    item.get("icongray")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                    appid,
+                ),
+            },
+        );
+    }
+    out
+}
+
+fn icon_url(raw: &str, appid: u32) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    if raw.starts_with("http") {
+        return raw.to_owned();
+    }
+    format!(
+        "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/{appid}/{raw}.jpg"
+    )
+}
+
+pub fn apply_schema(achievements: &mut [Achievement], schema: &HashMap<String, SchemaEntry>) {
+    for achievement in achievements.iter_mut() {
+        let Some(entry) = schema.get(&achievement.api_name) else {
+            continue;
+        };
+        if achievement.name == achievement.api_name || achievement.name.is_empty() {
+            achievement.name = entry.display_name.clone();
+        }
+        if achievement.description.is_empty() {
+            achievement.description = entry.description.clone();
+        }
+        achievement.icon = entry.icon.clone();
+        achievement.icon_gray = entry.icon_gray.clone();
+    }
+}
+
+pub fn schema(key: &str, appid: u32) -> Result<HashMap<String, SchemaEntry>, String> {
+    if key.is_empty() {
+        return Err("no steam api key".to_owned());
+    }
+    let url = format!(
+        "https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?key={key}&appid={appid}&l=en&format=json"
+    );
+    Ok(parse_schema(&crate::http::get_json(&url)?, appid))
 }
 
 pub fn parse_global_percentages(value: &Value) -> HashMap<String, f32> {
@@ -190,6 +289,91 @@ mod tests {
         assert_eq!(games.len(), 2);
         assert_eq!(games[0].appid, 620);
         assert_eq!(games[0].playtime_minutes, 320);
+    }
+
+    #[test]
+    fn crucial_parses_last_played_and_achievement_flag() {
+        let value: Value = serde_json::from_str(
+            r#"{"response":{"games":[
+                {"appid":620,"name":"Portal 2","playtime_forever":320,"rtime_last_played":1699999999,"has_community_visible_stats":true},
+                {"appid":228980,"name":"Steamworks","playtime_forever":0,"rtime_last_played":0,"has_community_visible_stats":false},
+                {"appid":1,"name":"Unknown","playtime_forever":0}]}}"#,
+        )
+        .unwrap();
+        let games = parse_owned_games(&value);
+        assert_eq!(games[0].last_played, 1_699_999_999);
+        assert_eq!(games[0].has_achievements, Some(true));
+        assert_eq!(games[1].has_achievements, Some(false));
+        assert_eq!(games[2].has_achievements, None);
+        assert_eq!(games[2].last_played, 0);
+    }
+
+    #[test]
+    fn crucial_schema_parses_names_icons_and_percentages_source() {
+        let value: Value = serde_json::from_str(
+            r#"{"game":{"gameName":"Portal 2","availableGameStats":{"achievements":[
+                {"name":"ACH.WIN","displayName":"Winner","hidden":0,"description":"Win it",
+                 "icon":"https://cdn.example/a.jpg","icongray":"https://cdn.example/a_gray.jpg"},
+                {"name":"ACH.HASHONLY","displayName":"Hashed","description":"","icon":"abc123","icongray":""}]}}}"#,
+        )
+        .unwrap();
+        let schema = parse_schema(&value, 620);
+        assert_eq!(schema.len(), 2);
+        assert_eq!(schema["ACH.WIN"].display_name, "Winner");
+        assert_eq!(schema["ACH.WIN"].icon, "https://cdn.example/a.jpg");
+        assert_eq!(
+            schema["ACH.HASHONLY"].icon,
+            "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/620/abc123.jpg"
+        );
+        assert_eq!(schema["ACH.HASHONLY"].icon_gray, "");
+    }
+
+    #[test]
+    fn crucial_schema_missing_stats_is_empty_not_panic() {
+        let value: Value = serde_json::from_str(r#"{"game":{"gameName":"x"}}"#).unwrap();
+        assert!(parse_schema(&value, 620).is_empty());
+    }
+
+    #[test]
+    fn crucial_apply_schema_fills_api_name_fallbacks_and_keeps_notes() {
+        let value: Value = serde_json::from_str(
+            r#"{"game":{"availableGameStats":{"achievements":[
+                {"name":"ACH.WIN","displayName":"Winner","description":"Win it","icon":"i","icongray":"g"}]}}}"#,
+        )
+        .unwrap();
+        let schema = parse_schema(&value, 620);
+        let mut achievements = vec![
+            Achievement {
+                api_name: "ACH.WIN".to_owned(),
+                name: "ACH.WIN".to_owned(),
+                note: "mine".to_owned(),
+                ..Default::default()
+            },
+            Achievement {
+                api_name: "OTHER".to_owned(),
+                name: "Keep me".to_owned(),
+                ..Default::default()
+            },
+        ];
+        apply_schema(&mut achievements, &schema);
+        assert_eq!(achievements[0].name, "Winner");
+        assert_eq!(achievements[0].description, "Win it");
+        assert_eq!(
+            achievements[0].icon,
+            "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/620/i.jpg"
+        );
+        assert_eq!(
+            achievements[0].icon_gray,
+            "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/620/g.jpg"
+        );
+        assert_eq!(achievements[0].note, "mine");
+        assert_eq!(achievements[1].name, "Keep me");
+        assert!(achievements[1].icon.is_empty());
+    }
+
+    #[test]
+    fn crucial_schema_without_key_is_error() {
+        assert!(schema("", 620).is_err());
     }
 
     #[test]

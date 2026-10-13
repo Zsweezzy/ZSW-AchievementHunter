@@ -30,6 +30,10 @@ pub fn art_dir() -> PathBuf {
     cache_dir().join("art")
 }
 
+pub fn icons_dir() -> PathBuf {
+    cache_dir().join("icons")
+}
+
 pub fn backup_dir() -> PathBuf {
     data_dir().join("backups")
 }
@@ -52,6 +56,7 @@ pub fn sort_path() -> PathBuf {
 
 pub fn ensure_dirs() -> std::io::Result<()> {
     std::fs::create_dir_all(art_dir())?;
+    std::fs::create_dir_all(icons_dir())?;
     std::fs::create_dir_all(backup_dir())?;
     Ok(())
 }
@@ -80,6 +85,23 @@ pub fn art_path(appid: u32) -> PathBuf {
     art_dir().join(format!("{appid}.jpg"))
 }
 
+pub fn icon_path(appid: u32, api_name: &str, gray: bool) -> PathBuf {
+    let safe: String = api_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    icons_dir().join(format!(
+        "{appid}_{safe}{}.jpg",
+        if gray { "_gray" } else { "" }
+    ))
+}
+
 pub fn art_url(appid: u32) -> String {
     format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}/library_600x900.jpg")
 }
@@ -104,5 +126,23 @@ mod tests {
     fn art_path_is_under_art_dir() {
         assert!(art_path(123).ends_with("123.jpg"));
         assert!(art_url(620).contains("/620/"));
+    }
+
+    #[test]
+    fn crucial_icon_path_never_escapes_the_icons_dir() {
+        let path = icon_path(620, "../../etc/passwd", false);
+        assert_eq!(path.parent().unwrap(), icons_dir());
+        assert!(
+            !path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(std::path::MAIN_SEPARATOR)
+        );
+        assert!(
+            icon_path(620, "A_B", true)
+                .to_string_lossy()
+                .ends_with("620_A_B_gray.jpg")
+        );
     }
 }

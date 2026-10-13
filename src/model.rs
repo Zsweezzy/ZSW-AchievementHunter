@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Achievement {
     pub api_name: String,
     pub name: String,
@@ -9,11 +10,12 @@ pub struct Achievement {
     pub unlock_time: Option<u64>,
     pub global_percent: Option<f32>,
     pub icon: String,
-    #[serde(default)]
+    pub icon_gray: String,
     pub note: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GuideInfo {
     pub source: String,
     pub url: String,
@@ -26,16 +28,16 @@ pub struct GuideInfo {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Game {
     pub appid: u32,
     pub name: String,
     pub playtime_minutes: u64,
+    pub last_played: u64,
     pub installed: bool,
-    #[serde(default)]
+    pub has_achievements: Option<bool>,
     pub achievements: Vec<Achievement>,
-    #[serde(default)]
     pub guides: Vec<GuideInfo>,
-    #[serde(default)]
     pub art: String,
 }
 
@@ -55,21 +57,89 @@ pub struct FlowGraph {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Games,
-    Flow,
-    Sort,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Games, Tab::Flow, Tab::Sort, Tab::Settings];
+    pub const ALL: [Tab; 2] = [Tab::Games, Tab::Settings];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Games => "Games",
-            Tab::Flow => "Flowgraph",
-            Tab::Sort => "Custom Sort",
             Tab::Settings => "Settings",
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameTab {
+    Achievements,
+    Flow,
+    Sort,
+}
+
+impl GameTab {
+    pub const ALL: [GameTab; 3] = [GameTab::Achievements, GameTab::Flow, GameTab::Sort];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GameTab::Achievements => "Achievements",
+            GameTab::Flow => "Flowgraph",
+            GameTab::Sort => "Custom Sort",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SortMode {
+    #[default]
+    Playtime,
+    LastPlayed,
+    Name,
+}
+
+impl SortMode {
+    pub const ALL: [SortMode; 3] = [SortMode::Playtime, SortMode::LastPlayed, SortMode::Name];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortMode::Playtime => "Most played",
+            SortMode::LastPlayed => "Last played",
+            SortMode::Name => "Name",
+        }
+    }
+}
+
+pub fn sort_games(games: &mut [Game], mode: SortMode) {
+    match mode {
+        SortMode::Playtime => games.sort_by_key(|g| std::cmp::Reverse(g.playtime_minutes)),
+        SortMode::LastPlayed => games.sort_by_key(|g| std::cmp::Reverse(g.last_played)),
+        SortMode::Name => games.sort_by_key(|g| g.name.to_lowercase()),
+    }
+}
+
+pub fn visible(game: &Game, installed_only: bool, hide_no_achievements: bool) -> bool {
+    if installed_only && !game.installed {
+        return false;
+    }
+    !(hide_no_achievements && game.has_achievements == Some(false))
+}
+
+pub fn humanize_ago(seconds: u64) -> String {
+    if seconds == 0 {
+        return "never".to_owned();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = now.saturating_sub(seconds) / 86_400;
+    match days {
+        0 => "today".to_owned(),
+        1 => "yesterday".to_owned(),
+        d if d < 30 => format!("{d} days ago"),
+        d if d < 365 => format!("{} months ago", d / 30),
+        d => format!("{} years ago", d / 365),
     }
 }
 
@@ -203,5 +273,74 @@ mod tests {
         };
         assert_eq!(game.unlocked_count(), 2);
         assert_eq!(game.completion_percent(), 50.0);
+    }
+
+    #[test]
+    fn crucial_visible_hides_only_known_achievementless_games() {
+        let known_none = Game {
+            has_achievements: Some(false),
+            ..Default::default()
+        };
+        let known_some = Game {
+            has_achievements: Some(true),
+            ..Default::default()
+        };
+        let unknown = Game::default();
+        let installed = Game {
+            installed: true,
+            ..Default::default()
+        };
+        assert!(!visible(&known_none, false, true));
+        assert!(visible(&known_none, false, false));
+        assert!(visible(&known_some, false, true));
+        assert!(visible(&unknown, false, true));
+        assert!(!visible(&unknown, true, false));
+        assert!(visible(&installed, true, false));
+    }
+
+    #[test]
+    fn crucial_sort_games_orders_by_each_mode() {
+        let game = |name: &str, playtime: u64, last: u64| Game {
+            name: name.to_owned(),
+            playtime_minutes: playtime,
+            last_played: last,
+            ..Default::default()
+        };
+        let build = || {
+            vec![
+                game("zeta", 10, 500),
+                game("Alpha", 90, 100),
+                game("mid", 50, 900),
+            ]
+        };
+
+        let mut games = build();
+        sort_games(&mut games, SortMode::Playtime);
+        assert_eq!(games[0].name, "Alpha");
+        assert_eq!(games[2].name, "zeta");
+
+        let mut games = build();
+        sort_games(&mut games, SortMode::LastPlayed);
+        assert_eq!(games[0].name, "mid");
+        assert_eq!(games[2].name, "Alpha");
+
+        let mut games = build();
+        sort_games(&mut games, SortMode::Name);
+        assert_eq!(games[0].name, "Alpha");
+        assert_eq!(games[1].name, "mid");
+        assert_eq!(games[2].name, "zeta");
+    }
+
+    #[test]
+    fn crucial_humanize_ago_buckets() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(humanize_ago(0), "never");
+        assert_eq!(humanize_ago(now), "today");
+        assert_eq!(humanize_ago(now - 86_400 * 2), "2 days ago");
+        assert_eq!(humanize_ago(now - 86_400 * 90), "3 months ago");
+        assert_eq!(humanize_ago(now - 86_400 * 800), "2 years ago");
     }
 }
