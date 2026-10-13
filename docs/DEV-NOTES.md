@@ -101,10 +101,22 @@ draw a flowgraph of them.
   / last played / name) is a Settings row because it re-sorts `library.json`
   itself; changing it marks both `settings` and `library` dirty so the choice
   survives a restart.
-- **Responsive grid.** Art cells are fixed-width and placed in
-  `ui.horizontal_wrapped`, so the grid reflows on resize; it is not an
-  `egui::Grid` (which stretches its columns to the window and leaves uneven
-  gaps).
+- **Responsive grid, exact cell geometry.** Art cells are placed in
+  `ui.horizontal_wrapped` (never an `egui::Grid`, which stretches columns to the
+  window and leaves uneven gaps), and each cell's rect comes from
+  `ui.allocate_exact_size(vec2(CELL_WIDTH, CELL_HEIGHT), …)` drawn into with
+  `ui.new_child(...)`. Both halves matter: `allocate_ui_with_layout` advances the
+  cursor by the cell's *content* rect, so a wider game name used to widen its
+  cell and drift the whole row (`x` pitch 150/152.2/161.5 instead of a constant
+  176), and unequal content heights staggered cells vertically. Because the
+  advance is now the fixed rect, cell pitch is `CELL_WIDTH + 14` and row pitch is
+  `CELL_HEIGHT + 16` regardless of names, fonts, or sort mode. Cells must not
+  paint outside that rect — all text is a single `.truncate()`d line, and
+  `CELL_HEIGHT` (270) must stay above the tallest cell content
+  (art 150×200 + three text lines + 6 pt gaps = 263 in LastPlayed mode).
+  Regression test: `app::tests::crucial_library_grid_cells_are_flush` reads the
+  painted artwork rectangles out of the headless `FullOutput` and asserts the
+  arithmetic x/y grid; it fails if any cell's content can influence its size.
 
 ## Environment / config
 
