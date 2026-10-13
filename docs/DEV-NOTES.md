@@ -65,9 +65,20 @@ draw a flowgraph of them.
   the Steam schema is unavailable.
 - **HowLongToBeat — link only.** Its search API is behind a WAF that rejects
   non-browser clients, so the app emits a link and never scrapes.
-- **PSNProfiles — not implemented.** Cloudflare blocks every request regardless
-  of user agent, and a server-side renderer proxy (`r.jina.ai`) gets the same
-  block, so no client-side fetch can succeed. Achievement *type* (story, online,
+- **PSNProfiles — link only.** Cloudflare blocks every request regardless of
+  user agent, and a server-side renderer proxy (`r.jina.ai`) gets the same block.
+  Importing a real signed-in session (with a valid `cf_clearance`) does not fix
+  it either: the clearance is bound to the browser fingerprint and IP that earned
+  it. Measured: 1 of 3 browser-tier attempts returned the page. So the app builds
+  a link to the site's own guide search and never fetches.
+  The URL pattern is not guessed — it is taken from the site's own JS
+  (`history.pushState(null, null, '/search/'+type+'?q='+encodeURIComponent(q))`,
+  types `games|guides|trophies|users`), so the app opens
+  `https://psnprofiles.com/search/guides?q=<url-encoded title>`. Deep-linking a
+  game's guide page needs its numeric PSNProfiles id, which only a lookup through
+  the Cloudflare wall could supply, and one title maps to several platform
+  entries (e.g. PS3/PS4 versions), so the search page is the honest target.
+  Achievement *type* (story, online,
   missable) has no public source in any of these APIs and is not shown.
   SteamHunters' per-achievement `obtainability` field is `0` across every game
   sampled, so it cannot stand in for a type either.
@@ -165,8 +176,9 @@ draw a flowgraph of them.
 - No screenshot-based visual test; CI runs the headless render test instead.
 - The `hidden` badge needs a Steam API key: without one the schema is never
   fetched, so no achievement is marked hidden.
-- Effective guide sources are SteamHunters and links outward; HowLongToBeat and
-  PSNProfiles block non-browser requests (see "Guide sources").
+- Effective guide sources are SteamHunters and links outward; HowLongToBeat
+  blocks non-browser requests and PSNProfiles blocks them entirely, so both are
+  link-only (PSNProfiles links to its guide search, see "Guide sources").
 
 ## Security review
 
