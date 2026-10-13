@@ -554,27 +554,46 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(14.0, 16.0);
                     for (appid, name, art, progress, last_played) in &cells {
-                        ui.allocate_ui_with_layout(
+                        let (rect, response) = ui.allocate_exact_size(
                             egui::vec2(CELL_WIDTH, CELL_HEIGHT),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                let response = art_widget(ui, name, art, egui::vec2(150.0, 200.0));
-                                if response.clicked() {
-                                    clicked = Some(*appid);
-                                }
-                                let label = truncate(name, 24);
-                                if ui.selectable_label(false, label).clicked() {
-                                    clicked = Some(*appid);
-                                }
-                                ui.weak(progress.as_str());
-                                if sort_mode == SortMode::LastPlayed {
-                                    ui.weak(format!(
+                            egui::Sense::click(),
+                        );
+                        if response.clicked() {
+                            clicked = Some(*appid);
+                        }
+                        if response.hovered() {
+                            ui.painter().rect_filled(
+                                rect,
+                                6.0,
+                                ui.visuals().widgets.hovered.bg_fill,
+                            );
+                        }
+                        let mut cell = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::top_down(egui::Align::Min)),
+                        );
+                        cell.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
+                        if art_widget(&mut cell, name, art, egui::vec2(150.0, 200.0)).clicked() {
+                            clicked = Some(*appid);
+                        }
+                        cell.add(egui::Label::new(name.as_str()).truncate());
+                        cell.add(
+                            egui::Label::new(egui::RichText::new(progress.as_str()).weak())
+                                .truncate(),
+                        );
+                        if sort_mode == SortMode::LastPlayed {
+                            cell.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!(
                                         "played {}",
                                         model::humanize_ago(*last_played)
-                                    ));
-                                }
-                            },
-                        );
+                                    ))
+                                    .weak(),
+                                )
+                                .truncate(),
+                            );
+                        }
                     }
                 });
             });
@@ -1429,6 +1448,96 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn crucial_library_grid_cells_are_flush() {
+        let _guard = crate::test_env_lock();
+        let dir = std::env::temp_dir().join(format!("ah-grid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
+        let ctx = egui::Context::default();
+        let mut app = App::headless(ctx.clone());
+        let named = |appid: u32, name: &str| Game {
+            appid,
+            name: name.to_owned(),
+            installed: true,
+            has_achievements: Some(true),
+            achievements: vec![Achievement {
+                api_name: "A".to_owned(),
+                name: "A".to_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        app.store.games = vec![
+            named(1, "A"),
+            named(2, "Portal 2"),
+            named(3, "Tom Clancy's Rainbow Six Siege"),
+            named(4, "ELDEN RING"),
+            named(5, "The Witcher 3: Wild Hunt"),
+            named(6, "Hades"),
+        ];
+        app.tab = Tab::Games;
+        app.store.settings.sort_mode = SortMode::LastPlayed;
+        model::sort_games(&mut app.store.games, SortMode::LastPlayed);
+
+        let screen = egui::vec2(1000.0, 800.0);
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), screen)),
+                ..Default::default()
+            },
+            |ui| app.draw(ui),
+        );
+        let mut cells: Vec<(f32, f32)> = out
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(r)
+                    if (r.rect.width() - 150.0).abs() < 0.5
+                        && (r.rect.height() - 200.0).abs() < 0.5 =>
+                {
+                    Some((r.rect.min.x, r.rect.min.y))
+                }
+                _ => None,
+            })
+            .collect();
+        out.drop_without_applying_deltas();
+        assert_eq!(cells.len(), 6, "one artwork placeholder per game");
+
+        cells.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.total_cmp(&b.0)));
+        let mut rows: Vec<(f32, Vec<f32>)> = Vec::new();
+        for (x, y) in cells {
+            match rows.last_mut() {
+                Some((row_y, xs)) if (y - *row_y).abs() < 0.5 => xs.push(x),
+                _ => rows.push((y, vec![x])),
+            }
+        }
+        assert!(
+            rows.len() >= 2,
+            "expected a wrapped grid at 1000 px: {rows:?}"
+        );
+
+        let col_pitch = CELL_WIDTH + 14.0;
+        let row_pitch = CELL_HEIGHT + 16.0;
+        let first_x = rows[0].1[0];
+        for (row, (y, xs)) in rows.iter().enumerate() {
+            let expected_y = rows[0].0 + row as f32 * row_pitch;
+            assert!(
+                (y - expected_y).abs() < 0.5,
+                "row {row} starts at y={y}, expected {expected_y}: {rows:?}"
+            );
+            for (col, x) in xs.iter().enumerate() {
+                let expected_x = first_x + col as f32 * col_pitch;
+                assert!(
+                    (x - expected_x).abs() < 0.5,
+                    "cell ({row},{col}) starts at x={x}, expected {expected_x}: {rows:?}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

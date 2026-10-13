@@ -64,9 +64,28 @@ tutorials in several ways.
   is only known afterwards, allocate a placeholder first, then re-place the item
   with `ui.put` at `Rect::from_center_size(pos2(placeholder.center().x,
   row.response.rect.center().y), size)`. `ui.put` does not advance the cursor.
-- Fixed-width grid cells: `ui.allocate_ui_with_layout(vec2(W, H), Layout::top_down(Align::Min), …)`
-  inside `ui.horizontal_wrapped` reflows on resize; an `egui::Grid` stretches its
-  columns to the window width and produces uneven gaps on fullscreen.
+- Fixed-width grid cells, the flush way:
+  `ui.allocate_exact_size(vec2(W, H), Sense::…)` (the parent advances by exactly
+  `W + item_spacing.x`) plus `ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)))`
+  to draw inside that rect. `new_child` does **not** advance the parent, so
+  content can never resize the cell. Do **not** use
+  `ui.allocate_ui_with_layout(vec2(W, H), …)` for grid cells: it advances the
+  cursor by the child's *content* rect (`scope_dyn` calls
+  `advance_cursor_after_rect(child.min_rect())`), so long names widen their own
+  cell and the row drifts, and content taller than `H` changes the wrapped line
+  height and staggers the row. `allocate_exact_size` alone over-advances if you
+  also wrap the content in a `scope` — pair it with `new_child`, or with nothing
+  and just `painter` calls.
+- Text inside a fixed cell must be single-line: `egui::Label::new(text).truncate()`
+  (there is no `Label::weak()`; use `RichText::new(text).weak()`). Labels wrap by
+  default in a vertical layout and wrapping is what made cell heights uneven.
+- An `egui::Grid` stretches its columns to the window width and produces uneven
+  gaps on fullscreen.
+- Headless geometry check: pass
+  `RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))), .. }`
+  to `run_ui` to control the layout width, then read painted rects back out of
+  `FullOutput::shapes` (`Shape::Rect(r) => r.rect`) before calling
+  `drop_without_applying_deltas()`.
 - `Response::interact(Sense)` adds interaction to an existing response, e.g. to
   attach `.context_menu(...)` to a `Frame`'s response. Inside a menu,
   `ui.close()` closes it.
