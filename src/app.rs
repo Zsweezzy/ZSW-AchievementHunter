@@ -558,15 +558,9 @@ impl App {
                             egui::vec2(CELL_WIDTH, CELL_HEIGHT),
                             egui::Sense::click(),
                         );
+                        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
                         if response.clicked() {
                             clicked = Some(*appid);
-                        }
-                        if response.hovered() {
-                            ui.painter().rect_filled(
-                                rect,
-                                6.0,
-                                ui.visuals().widgets.hovered.bg_fill,
-                            );
                         }
                         let mut cell = ui.new_child(
                             egui::UiBuilder::new()
@@ -574,8 +568,13 @@ impl App {
                                 .layout(egui::Layout::top_down(egui::Align::Min)),
                         );
                         cell.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
-                        if art_widget(&mut cell, name, art, egui::vec2(150.0, 200.0)).clicked() {
-                            clicked = Some(*appid);
+                        let art = art_widget(&mut cell, name, art, egui::vec2(150.0, 200.0));
+                        if response.hovered() {
+                            cell.painter().rect_filled(
+                                art.rect,
+                                6.0,
+                                cell.visuals().selection.bg_fill.gamma_multiply(0.25),
+                            );
                         }
                         cell.add(egui::Label::new(name.as_str()).truncate());
                         cell.add(
@@ -1369,7 +1368,7 @@ fn color_row(ui: &mut egui::Ui, label: &str, color: &mut [u8; 3]) -> bool {
 
 fn art_widget(ui: &mut egui::Ui, name: &str, art: &str, size: egui::Vec2) -> egui::Response {
     if art.is_empty() {
-        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
         let weak = ui.visuals().weak_text_color();
         ui.painter()
             .rect_filled(rect, 6.0, ui.visuals().widgets.inactive.bg_fill);
@@ -1394,7 +1393,6 @@ fn art_widget(ui: &mut egui::Ui, name: &str, art: &str, size: egui::Vec2) -> egu
                 .fit_to_exact_size(size)
                 .corner_radius(6.0),
         )
-        .interact(egui::Sense::click())
     }
 }
 
@@ -1537,6 +1535,102 @@ mod tests {
                 );
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crucial_library_cell_stays_hoverable_over_the_artwork() {
+        let _guard = crate::test_env_lock();
+        let dir = std::env::temp_dir().join(format!("ah-hover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
+        let ctx = egui::Context::default();
+        let screen = egui::vec2(1000.0, 800.0);
+        let raw = |events: Vec<egui::Event>| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), screen)),
+            events,
+            ..Default::default()
+        };
+        let art_size = egui::vec2(150.0, 200.0);
+
+        // The whole cell is the click target, so the artwork must never sense clicks:
+        // an interactive widget becomes the topmost hit and egui then hovers *it*
+        // instead of the cell, which killed the highlight over the art.
+        ctx.run_ui(raw(Vec::new()), |ui| {
+            assert!(
+                !art_widget(ui, "Portal 2", "", art_size)
+                    .sense
+                    .senses_click(),
+                "the art placeholder must not be a click target"
+            );
+            assert!(
+                !art_widget(ui, "Portal 2", "620.jpg", art_size)
+                    .sense
+                    .senses_click(),
+                "the artwork image must not be a click target"
+            );
+        })
+        .drop_without_applying_deltas();
+
+        let mut app = App::headless(ctx.clone());
+        app.store.games = vec![Game {
+            appid: 1,
+            name: "Portal 2".to_owned(),
+            installed: true,
+            has_achievements: Some(true),
+            achievements: vec![Achievement {
+                api_name: "A".to_owned(),
+                name: "A".to_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        app.tab = Tab::Games;
+        let art_rects = |out: &egui::FullOutput| -> Vec<egui::Rect> {
+            out.shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(r) if r.rect.size() == art_size => Some(r.rect),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        let out = ctx.run_ui(raw(Vec::new()), |ui| app.draw(ui));
+        let art = art_rects(&out);
+        out.drop_without_applying_deltas();
+        assert_eq!(art.len(), 1, "expected one artwork placeholder rect");
+
+        let out = ctx.run_ui(raw(Vec::new()), |ui| app.draw(ui));
+        assert_eq!(
+            art_rects(&out),
+            art,
+            "no highlight while the pointer is away"
+        );
+        out.drop_without_applying_deltas();
+
+        let out = ctx.run_ui(
+            raw(vec![egui::Event::PointerMoved(art[0].center())]),
+            |ui| app.draw(ui),
+        );
+        assert_eq!(
+            art_rects(&out),
+            vec![art[0], art[0]],
+            "hovering the artwork must tint it (a second rect at the art position)"
+        );
+        out.drop_without_applying_deltas();
+
+        let out = ctx.run_ui(
+            raw(vec![egui::Event::PointerMoved(egui::pos2(900.0, 700.0))]),
+            |ui| app.draw(ui),
+        );
+        assert_eq!(
+            art_rects(&out),
+            art,
+            "the highlight must clear when the pointer leaves"
+        );
+        out.drop_without_applying_deltas();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

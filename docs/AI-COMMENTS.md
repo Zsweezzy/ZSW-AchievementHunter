@@ -81,6 +81,19 @@ tutorials in several ways.
   default in a vertical layout and wrapping is what made cell heights uneven.
 - An `egui::Grid` stretches its columns to the window width and produces uneven
   gaps on fullscreen.
+- Hover is exclusive to the topmost click/drag widget
+  (`egui-0.36.2/src/interaction.rs`, the `hovered` set): only `hits.click` and
+  `hits.drag` are hovered, plus *non-interactive* widgets above them. So a child
+  widget with `Sense::click()` on top of a clickable parent steals the parent's
+  hover — parent hover still works everywhere else, which makes the bug look
+  intermittent. `Image`'s default sense is `Sense::hover()` (non-interactive, so
+  it does not steal); `.interact(Sense::click())` is what breaks it. Nest an
+  interactive child only when it needs its own hit area.
+- A hover highlight over an image must be painted *after* the image (a
+  translucent `visuals.selection.bg_fill.gamma_multiply(0.25)`) — a filled
+  rect behind the cell only shows in the cell's padding and reads as a lopsided
+  block. `Response::on_hover_cursor(CursorIcon::PointingHand)` is opt-in for
+  hand-rolled clickable rects.
 - Headless geometry check: pass
   `RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))), .. }`
   to `run_ui` to control the layout width, then read painted rects back out of
