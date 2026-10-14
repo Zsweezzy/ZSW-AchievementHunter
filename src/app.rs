@@ -9,6 +9,8 @@ use std::time::Instant;
 const ICON_SIZE: f32 = 64.0;
 const CELL_WIDTH: f32 = 162.0;
 const CELL_HEIGHT: f32 = 270.0;
+const ART_HEIGHT: f32 = 200.0;
+const ART_WIDTH: f32 = ART_HEIGHT * 2.0 / 3.0;
 
 pub struct App {
     store: Store,
@@ -568,7 +570,8 @@ impl App {
                                 .layout(egui::Layout::top_down(egui::Align::Min)),
                         );
                         cell.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
-                        let art = art_widget(&mut cell, name, art, egui::vec2(150.0, 200.0));
+                        let art =
+                            art_widget(&mut cell, name, art, egui::vec2(ART_WIDTH, ART_HEIGHT));
                         if response.hovered() {
                             cell.painter().rect_filled(
                                 art.rect,
@@ -1495,6 +1498,18 @@ mod tests {
     }
 
     #[test]
+    fn crucial_loaded_art_renders_at_the_pending_placeholder_size() {
+        let source = egui::vec2(600.0, 900.0);
+        let loaded = egui::Image::new("file://art.jpg")
+            .fit_to_exact_size(egui::vec2(ART_WIDTH, ART_HEIGHT))
+            .calc_size(egui::vec2(CELL_WIDTH, CELL_HEIGHT), Some(source));
+        assert!(
+            (loaded.x - ART_WIDTH).abs() < 0.001 && (loaded.y - ART_HEIGHT).abs() < 0.001,
+            "600x900 art renders {loaded:?} but the placeholder is {ART_WIDTH}x{ART_HEIGHT}"
+        );
+    }
+
+    #[test]
     fn crucial_library_grid_cells_are_flush() {
         let _guard = crate::test_env_lock();
         let dir = std::env::temp_dir().join(format!("ah-grid-{}", std::process::id()));
@@ -1540,8 +1555,8 @@ mod tests {
             .iter()
             .filter_map(|clipped| match &clipped.shape {
                 egui::Shape::Rect(r)
-                    if (r.rect.width() - 150.0).abs() < 0.5
-                        && (r.rect.height() - 200.0).abs() < 0.5 =>
+                    if (r.rect.width() - ART_WIDTH).abs() < 0.5
+                        && (r.rect.height() - ART_HEIGHT).abs() < 0.5 =>
                 {
                     Some((r.rect.min.x, r.rect.min.y))
                 }
@@ -1598,7 +1613,7 @@ mod tests {
             events,
             ..Default::default()
         };
-        let art_size = egui::vec2(150.0, 200.0);
+        let art_size = egui::vec2(ART_WIDTH, ART_HEIGHT);
 
         // The whole cell is the click target, so the artwork must never sense clicks:
         // an interactive widget becomes the topmost hit and egui then hovers *it*
@@ -1637,7 +1652,12 @@ mod tests {
             out.shapes
                 .iter()
                 .filter_map(|clipped| match &clipped.shape {
-                    egui::Shape::Rect(r) if r.rect.size() == art_size => Some(r.rect),
+                    egui::Shape::Rect(r)
+                        if (r.rect.width() - art_size.x).abs() < 0.5
+                            && (r.rect.height() - art_size.y).abs() < 0.5 =>
+                    {
+                        Some(r.rect)
+                    }
                     _ => None,
                 })
                 .collect()
