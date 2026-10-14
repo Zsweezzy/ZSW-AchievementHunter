@@ -124,10 +124,12 @@ draw a flowgraph of them.
   `CELL_HEIGHT + 16` regardless of names, fonts, or sort mode. Cells must not
   paint outside that rect — all text is a single `.truncate()`d line, and
   `CELL_HEIGHT` (270) must stay above the tallest cell content
-  (art 150×200 + three text lines + 6 pt gaps = 263 in LastPlayed mode).
+  (art 133.33×200 + three text lines + 6 pt gaps = 263 in LastPlayed mode).
   Regression test: `app::tests::crucial_library_grid_cells_are_flush` reads the
   painted artwork rectangles out of the headless `FullOutput` and asserts the
-  arithmetic x/y grid; it fails if any cell's content can influence its size.
+  placeholder (ART_WIDTH×ART_HEIGHT) as well as the loaded image's painted rect;
+  the art box shares the 2:3 source aspect so aspect-preserving fit renders loaded
+  art at exactly the placeholder size.
 - **Cell hover is the cell's job, not the artwork's.** The whole cell is one
   `Sense::click()` rect (with a pointing-hand cursor) and the artwork is
   deliberately *not* interactive. egui hovers only the single topmost
