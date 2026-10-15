@@ -7,9 +7,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
 const ICON_SIZE: f32 = 64.0;
-const CELL_WIDTH: f32 = 162.0;
+const CELL_WIDTH: f32 = 148.0;
 const CELL_HEIGHT: f32 = 270.0;
-const ART_HEIGHT: f32 = 200.0;
+const ART_HEIGHT: f32 = 192.0;
 const ART_WIDTH: f32 = ART_HEIGHT * 2.0 / 3.0;
 
 pub struct App {
@@ -400,12 +400,7 @@ impl App {
             active_text: ui.visuals().text_color(),
             accent: ui.visuals().hyperlink_color,
             radius: egui::CornerRadius::same(8),
-            active_radius: egui::CornerRadius {
-                nw: 9,
-                ne: 9,
-                sw: 0,
-                se: 0,
-            },
+            active_radius: egui::CornerRadius::same(9),
             height: 36.0,
             accent_line: true,
         };
@@ -554,7 +549,7 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(14.0, 16.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(12.0, 10.0);
                     for (appid, name, art, progress, last_played) in &cells {
                         let (rect, response) = ui.allocate_exact_size(
                             egui::vec2(CELL_WIDTH, CELL_HEIGHT),
@@ -1308,10 +1303,7 @@ fn paint_tab(ui: &mut egui::Ui, style: &TabStyle, label: &str, active: bool) -> 
     ui.painter().rect_filled(rect, radius, fill);
     if active && style.accent_line {
         ui.painter().line_segment(
-            [
-                rect.left_top() + egui::vec2(6.0, 1.0),
-                rect.right_top() + egui::vec2(-6.0, 1.0),
-            ],
+            [rect.left_top(), rect.right_top()],
             egui::Stroke::new(2.0, style.accent),
         );
     }
@@ -1542,10 +1534,12 @@ mod tests {
         app.store.settings.sort_mode = SortMode::LastPlayed;
         model::sort_games(&mut app.store.games, SortMode::LastPlayed);
 
-        let screen = egui::vec2(1000.0, 800.0);
         let out = ctx.run_ui(
             egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), screen)),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(900.0, 800.0),
+                )),
                 ..Default::default()
             },
             |ui| app.draw(ui),
@@ -1579,8 +1573,8 @@ mod tests {
             "expected a wrapped grid at 1000 px: {rows:?}"
         );
 
-        let col_pitch = CELL_WIDTH + 14.0;
-        let row_pitch = CELL_HEIGHT + 16.0;
+        let col_pitch = CELL_WIDTH + 12.0;
+        let row_pitch = CELL_HEIGHT + 10.0;
         let first_x = rows[0].1[0];
         for (row, (y, xs)) in rows.iter().enumerate() {
             let expected_y = rows[0].0 + row as f32 * row_pitch;
