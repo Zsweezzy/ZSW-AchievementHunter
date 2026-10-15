@@ -63,8 +63,50 @@ pub fn get_text(url: &str) -> Result<String, String> {
 }
 
 pub fn get_json(url: &str) -> Result<serde_json::Value, String> {
-    let text = get_text(url)?;
-    serde_json::from_str(&text).map_err(|e| format!("invalid json: {e}"))
+    let response = client().get(url).send().map_err(request_failed)?;
+    let status = response.status();
+    let text = read_text(response)?;
+    if status.is_success() {
+        return serde_json::from_str(&text).map_err(|e| format!("invalid json: {e}"));
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Some(ps) = v.get("playerstats")
+            && let Some(err) = ps.get("error").and_then(|x| x.as_str())
+        {
+            return Err(err.to_owned());
+        }
+        if let Some(ps) = v.get("playerstats")
+            && let Some(msg) = ps.get("message").and_then(|x| x.as_str())
+        {
+            return Err(msg.to_owned());
+        }
+        if let Some(resp) = v.get("response") {
+            if let Some(err) = resp.get("error") {
+                if let Some(m) = err.get("message").and_then(|x| x.as_str()) {
+                    return Err(m.to_owned());
+                }
+                if let Some(m) = err.as_str() {
+                    return Err(m.to_owned());
+                }
+            }
+            if let Some(m) = resp.get("message").and_then(|x| x.as_str()) {
+                return Err(m.to_owned());
+            }
+            if let Some(m) = resp.get("errorMsg").and_then(|x| x.as_str()) {
+                return Err(m.to_owned());
+            }
+        }
+        if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
+            return Err(err.to_owned());
+        }
+        if let Some(err) = v.get("error_description").and_then(|x| x.as_str()) {
+            return Err(err.to_owned());
+        }
+        if let Some(msg) = v.get("message").and_then(|x| x.as_str()) {
+            return Err(msg.to_owned());
+        }
+    }
+    Err(format!("http {status}"))
 }
 
 pub fn get_json_with_headers(
@@ -96,10 +138,36 @@ pub fn post_json(
     let response = request.send().map_err(request_failed)?;
     let status = response.status();
     let text = read_text(response)?;
-    if !status.is_success() {
-        return Err(format!("http {status}"));
+    if status.is_success() {
+        return serde_json::from_str(&text).map_err(|e| format!("invalid json: {e}"));
     }
-    serde_json::from_str(&text).map_err(|e| format!("invalid json: {e}"))
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Some(ps) = v.get("playerstats")
+            && let Some(err) = ps.get("error").and_then(|x| x.as_str())
+        {
+            return Err(err.to_owned());
+        }
+        if let Some(resp) = v.get("response") {
+            if let Some(err) = resp.get("error") {
+                if let Some(m) = err.get("message").and_then(|x| x.as_str()) {
+                    return Err(m.to_owned());
+                }
+                if let Some(m) = err.as_str() {
+                    return Err(m.to_owned());
+                }
+            }
+            if let Some(m) = resp.get("message").and_then(|x| x.as_str()) {
+                return Err(m.to_owned());
+            }
+        }
+        if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
+            return Err(err.to_owned());
+        }
+        if let Some(msg) = v.get("message").and_then(|x| x.as_str()) {
+            return Err(msg.to_owned());
+        }
+    }
+    Err(format!("http {status}"))
 }
 
 pub fn download(url: &str, dest: &Path) -> Result<(), String> {
