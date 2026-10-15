@@ -17,7 +17,7 @@ draw a flowgraph of them.
 | --- | --- |
 | `src/main.rs` | eframe launcher, window size 1280x820. |
 | `src/lib.rs` | Module list; `test_env_lock()` serialises env-mutating tests. |
-| `src/app.rs` | The entire GUI: `App`, the Games/Settings tab bar, the per-game sub-tabs (Achievements/Flow/Sort), the shared tab painter, background threads, image widgets. |
+| `src/app.rs` | The entire GUI: `App`, the Games/Settings tab bar, the per-game sub-tabs (Achievements/Flow/Sort/Guide), the shared tab painter, background threads, image widgets. |
 | `src/model.rs` | Plain data: `Achievement`, `GuideInfo`, `Game`, `FlowNode`, `FlowGraph`, `Tab`, `GameTab`, `SortMode`, filter/sort/move helpers. |
 | `src/store.rs` | Loads/saves the persisted documents; atomic writes; triggers backups; merges refreshed Steam data into existing records. |
 | `src/settings.rs` | `Settings`, `Theme` (Tokyo Night default), `FontSettings`, and the `apply(ctx)` entry point that pushes theme, fonts, spacing, and zoom into egui. |
@@ -26,7 +26,7 @@ draw a flowgraph of them.
 | `src/http.rs` | One shared blocking `reqwest` client, query encoding, JSON GET/POST (with optional headers), and `.part`-swap downloads. |
 | `src/steam.rs` | Steam Web API request builders + parsers (owned games, achievements, global percentages, schema/icons, vanity URL). |
 | `src/vdf.rs` | Valve Data Format parsing for `libraryfolders.vdf`, `appmanifest_*.acf`, and `loginusers.vdf`. |
-| `src/providers.rs` | Third-party sources: the SteamHunters JSON API, a HowLongToBeat link-only fallback, and SteamGridDB autocomplete/grids. |
+| `src/providers.rs` | Third-party sources: the SteamHunters JSON API, a HowLongToBeat link-only fallback, and SteamGridDB autocomplete/grids. Also the local PSNProfiles guide reader (import + per-appid cache under `guides/psnprofiles/`). |
 
 ## Invariants
 
@@ -82,6 +82,18 @@ draw a flowgraph of them.
   missable) has no public source in any of these APIs and is not shown.
   SteamHunters' per-achievement `obtainability` field is `0` across every game
   sampled, so it cannot stand in for a type either.
+- **PSNProfiles guide text — imported, read-only, local.** The app never fetches
+  PSNProfiles (Cloudflare, above). Instead the user runs a collector script in
+  their own signed-in browser (`psnprofiles-collect.js`), which writes a JSON file
+  shaped `{ "results": [ { "title", "pickedTitle", "pickedUrl", "markdown", … } ] }`.
+  The Guide sub-tab imports it: it maps each entry's `title` to a Steam `appid`
+  by case-insensitive name against the loaded library, skips entries with no match
+  or empty `markdown`, and writes one file per game to
+  `<data>/guides/psnprofiles/<appid>.json`. The import source is the first of
+  `<data>/psn-guides.json` or `~/Downloads/psn-guides.json` that exists. Guide text
+  lives only in the data dir and is never committed to the repo. `markdown` is
+  rendered line-based (headings from leading `#`, image markdown dropped, link
+  markdown reduced to its text) with no markdown-renderer dependency.
 
 ## UI behaviour
 
@@ -120,12 +132,13 @@ draw a flowgraph of them.
   cursor by the cell's *content* rect, so a wider game name used to widen its
   cell and drift the whole row (`x` pitch 150/152.2/161.5 instead of a constant
   176), and unequal content heights staggered cells vertically. Because the
-  advance is now the fixed rect, cell pitch is `CELL_WIDTH + 14` and row pitch is
-  `CELL_HEIGHT + 16` regardless of names, fonts, or sort mode. Cells must not
+  advance is now the fixed rect, cell pitch is `CELL_WIDTH + 12` and row pitch is
+  `CELL_HEIGHT + 10` regardless of names, fonts, or sort mode. Cells must not
   paint outside that rect — all text is a single `.truncate()`d line, and
-  `CELL_HEIGHT` (270) must stay above the tallest cell content
-  (art 133.33×200 + three text lines + 6 pt gaps = 263 in LastPlayed mode).
-  Regression test: `app::tests::crucial_library_grid_cells_are_flush` reads the
+  `CELL_HEIGHT` (232) must stay above the tallest cell content
+  (art 100×150 + three text lines + 6 pt gaps = ~225 in LastPlayed mode).
+  Regression test: `app::tests::crucial_library_grid_cells_are_flush` renders a
+  700 px-wide grid (narrow enough that six games must wrap) and reads the
   painted artwork rectangles out of the headless `FullOutput` and asserts the
   placeholder (ART_WIDTH×ART_HEIGHT) as well as the loaded image's painted rect;
   the art box shares the 2:3 source aspect so aspect-preserving fit renders loaded

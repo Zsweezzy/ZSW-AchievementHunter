@@ -50,6 +50,14 @@ pub fn flow_path() -> PathBuf {
     data_dir().join("flow.json")
 }
 
+pub fn guides_dir() -> PathBuf {
+    data_dir().join("guides")
+}
+
+pub fn psnprofiles_guides_dir() -> PathBuf {
+    guides_dir().join("psnprofiles")
+}
+
 pub fn sort_path() -> PathBuf {
     data_dir().join("sort.json")
 }
@@ -58,6 +66,7 @@ pub fn ensure_dirs() -> std::io::Result<()> {
     std::fs::create_dir_all(art_dir())?;
     std::fs::create_dir_all(icons_dir())?;
     std::fs::create_dir_all(backup_dir())?;
+    std::fs::create_dir_all(psnprofiles_guides_dir())?;
     Ok(())
 }
 

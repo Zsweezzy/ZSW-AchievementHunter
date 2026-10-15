@@ -9,6 +9,83 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+pub fn local_psnprofiles_guide(appid: u32) -> Option<(String, String)> {
+    let path = crate::paths::psnprofiles_guides_dir().join(format!("{appid}.json"));
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let title = value
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let markdown = value
+        .get("markdown")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    if markdown.trim().is_empty() {
+        None
+    } else {
+        Some((title, markdown))
+    }
+}
+
+pub fn psnprofiles_import_path() -> Option<std::path::PathBuf> {
+    let data = crate::paths::data_dir().join("psn-guides.json");
+    if data.is_file() {
+        return Some(data);
+    }
+    crate::paths::home()
+        .map(|home| home.join("Downloads/psn-guides.json"))
+        .filter(|path| path.is_file())
+}
+
+pub fn import_psnprofiles(
+    path: &std::path::Path,
+    games: &[Game],
+) -> Result<(usize, usize), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let results = value
+        .get("results")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "no results array in collector JSON".to_owned())?;
+    let by_name: std::collections::HashMap<String, u32> = games
+        .iter()
+        .map(|g| (g.name.to_lowercase(), g.appid))
+        .collect();
+    std::fs::create_dir_all(crate::paths::psnprofiles_guides_dir()).map_err(|e| e.to_string())?;
+    let (mut written, mut skipped) = (0usize, 0usize);
+    for item in results {
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let markdown = item
+            .get("markdown")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let Some(appid) = by_name.get(&title.to_lowercase()).copied() else {
+            skipped += 1;
+            continue;
+        };
+        if markdown.trim().is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let entry = serde_json::json!({
+            "source": "psnprofiles",
+            "title": item.get("pickedTitle").and_then(|v| v.as_str()).unwrap_or(title),
+            "url": item.get("pickedUrl").and_then(|v| v.as_str()).unwrap_or_default(),
+            "markdown": markdown,
+        });
+        let dest = crate::paths::psnprofiles_guides_dir().join(format!("{appid}.json"));
+        std::fs::write(dest, entry.to_string()).map_err(|e| e.to_string())?;
+        written += 1;
+    }
+    Ok((written, skipped))
+}
+
 pub fn hltb_search_url(name: &str) -> String {
     format!(
         "https://howlongtobeat.com/?q={}",
@@ -60,7 +137,12 @@ fn link_only(
             url,
             summary,
             fetched_at: now_secs(),
-            ..Default::default()
+            title: String::new(),
+            markdown: String::new(),
+            main_hours: None,
+            extra_hours: None,
+            completionist_hours: None,
+            difficulty: String::new(),
         },
         Some(error),
     )
@@ -136,7 +218,12 @@ pub fn parse_hltb(value: &Value, game_name: &str, url: String) -> GuideInfo {
             url,
             summary: format!("No HowLongToBeat entry for \"{game_name}\"."),
             fetched_at: now_secs(),
-            ..Default::default()
+            title: String::new(),
+            markdown: String::new(),
+            main_hours: None,
+            extra_hours: None,
+            completionist_hours: None,
+            difficulty: String::new(),
         };
     };
 
@@ -168,6 +255,8 @@ pub fn parse_hltb(value: &Value, game_name: &str, url: String) -> GuideInfo {
         completionist_hours: completionist,
         difficulty: String::new(),
         fetched_at: now_secs(),
+        title: String::new(),
+        markdown: String::new(),
     }
 }
 
@@ -248,7 +337,9 @@ pub fn parse_steamhunters_app(value: &Value, fallback_name: &str, url: String) -
         completionist_hours: completion,
         difficulty,
         fetched_at: now_secs(),
-        ..Default::default()
+        title: String::new(),
+        markdown: String::new(),
+        extra_hours: None,
     }
 }
 

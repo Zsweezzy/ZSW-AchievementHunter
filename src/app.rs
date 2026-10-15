@@ -7,9 +7,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
 const ICON_SIZE: f32 = 64.0;
-const CELL_WIDTH: f32 = 148.0;
-const CELL_HEIGHT: f32 = 270.0;
-const ART_HEIGHT: f32 = 192.0;
+const CELL_WIDTH: f32 = 124.0;
+const CELL_HEIGHT: f32 = 232.0;
+const ART_HEIGHT: f32 = 150.0;
 const ART_WIDTH: f32 = ART_HEIGHT * 2.0 / 3.0;
 
 pub struct App {
@@ -33,6 +33,7 @@ pub struct App {
     note_edit: Option<String>,
     prefetch: VecDeque<u32>,
     prefetch_busy: bool,
+    psn_guide: Option<(u32, String, String)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -89,6 +90,7 @@ impl App {
             note_edit: None,
             prefetch: VecDeque::new(),
             prefetch_busy: false,
+            psn_guide: None,
         };
         app.status = app.ready_status();
         app
@@ -700,7 +702,50 @@ impl App {
             GameTab::Achievements => self.achievement_list(ui, appid),
             GameTab::Flow => self.flow_tab(ui, appid),
             GameTab::Sort => self.sort_tab(ui, appid),
+            GameTab::Guide => self.guide_text_tab(ui, appid),
         }
+    }
+
+    fn guide_text_tab(&mut self, ui: &mut egui::Ui, appid: u32) {
+        if self.psn_guide.as_ref().map(|(id, _, _)| *id) != Some(appid) {
+            self.psn_guide = providers::local_psnprofiles_guide(appid)
+                .map(|(title, markdown)| (appid, title, markdown));
+        }
+        let Some((_, title, markdown)) = &self.psn_guide else {
+            ui.label("No PSNProfiles guide text imported for this game.");
+            ui.weak("Run the collector in your browser, then import the JSON into the guides/psnprofiles folder.");
+            if let Some(path) = providers::psnprofiles_import_path() {
+                if ui
+                    .button(format!("Import guide text from {}", path.display()))
+                    .clicked()
+                {
+                    match providers::import_psnprofiles(&path, &self.store.games) {
+                        Ok((written, skipped)) => {
+                            self.status = format!(
+                                "Imported {written} PSNProfiles guides ({skipped} skipped)."
+                            );
+                            self.psn_guide = None;
+                        }
+                        Err(error) => self.status = format!("Import failed: {error}"),
+                    }
+                }
+            } else {
+                ui.weak("Place the collector output at <data>/psn-guides.json or ~/Downloads/psn-guides.json, then reopen this tab.");
+            }
+            return;
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(title.as_str());
+            ui.weak(format!("{} characters", markdown.chars().count()));
+        });
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for line in markdown.lines() {
+                    render_markdown_line(ui, line);
+                }
+            });
     }
 
     fn achievement_list(&mut self, ui: &mut egui::Ui, appid: u32) {
@@ -1264,6 +1309,7 @@ impl App {
             note_edit: None,
             prefetch: VecDeque::new(),
             prefetch_busy: false,
+            psn_guide: None,
         }
     }
 }
@@ -1417,6 +1463,79 @@ fn psnprofiles_guide_url(name: &str) -> String {
     format!("https://psnprofiles.com/search/guides?q={query}")
 }
 
+fn strip_markdown_links(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            // image: ![alt](url) -> skip entirely
+            if let Some(end) = find_closing(bytes, i + 2, b')') {
+                i = end + 1;
+                continue;
+            }
+        }
+        if bytes[i] == b'['
+            && let Some(close) = find_closing(bytes, i + 1, b']')
+        {
+            let text = &line[i + 1..close];
+            if close + 1 < bytes.len() && bytes[close + 1] == b'(' {
+                if let Some(paren) = find_closing(bytes, close + 2, b')') {
+                    out.push_str(text);
+                    i = paren + 1;
+                    continue;
+                }
+            } else {
+                out.push_str(text);
+                i = close + 1;
+                continue;
+            }
+        }
+        let ch_len = utf8_len(bytes[i]);
+        out.push_str(&line[i..i + ch_len]);
+        i += ch_len;
+    }
+    let cleaned = out.replace("**", "").replace("__", "");
+    cleaned.trim().to_owned()
+}
+
+fn find_closing(bytes: &[u8], start: usize, needle: u8) -> Option<usize> {
+    bytes[start..]
+        .iter()
+        .position(|b| *b == needle)
+        .map(|p| start + p)
+}
+
+fn utf8_len(byte: u8) -> usize {
+    match byte {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        _ => 4,
+    }
+}
+
+fn render_markdown_line(ui: &mut egui::Ui, line: &str) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        ui.add_space(4.0);
+        return;
+    }
+    let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+    let body = strip_markdown_links(trimmed.trim_start_matches('#').trim());
+    if hashes > 0 && !body.is_empty() {
+        let size = match hashes {
+            1 => 20.0,
+            2 => 17.0,
+            3 => 15.0,
+            _ => 14.0,
+        };
+        ui.label(egui::RichText::new(body).strong().size(size));
+    } else {
+        ui.label(body);
+    }
+}
+
 fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();
@@ -1538,7 +1657,7 @@ mod tests {
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::pos2(0.0, 0.0),
-                    egui::vec2(900.0, 800.0),
+                    egui::vec2(700.0, 800.0),
                 )),
                 ..Default::default()
             },
@@ -1570,7 +1689,7 @@ mod tests {
         }
         assert!(
             rows.len() >= 2,
-            "expected a wrapped grid at 1000 px: {rows:?}"
+            "expected a wrapped grid at 700 px: {rows:?}"
         );
 
         let col_pitch = CELL_WIDTH + 12.0;
@@ -1741,6 +1860,85 @@ mod tests {
                 .drop_without_applying_deltas();
         }
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crucial_strip_markdown_links_removes_images_and_keeps_link_text() {
+        assert_eq!(
+            strip_markdown_links("![Gold](https://x/gold.png) [Souls Saved](https://y#a)"),
+            "Souls Saved"
+        );
+        assert_eq!(
+            strip_markdown_links("plain **bold** text"),
+            "plain bold text"
+        );
+        assert_eq!(strip_markdown_links("[link](u) tail"), "link tail");
+        assert_eq!(
+            strip_markdown_links("Ōkami — diacritics"),
+            "Ōkami — diacritics"
+        );
+    }
+
+    #[test]
+    fn crucial_guide_tab_renders_imported_text() {
+        let _guard = crate::test_env_lock();
+        let dir = std::env::temp_dir().join(format!("ah-guide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("guides/psnprofiles")).unwrap();
+        unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
+
+        std::fs::write(
+            dir.join("guides/psnprofiles/620.json"),
+            r###"{"title":"T","markdown":"## Stage 1\n![x](https://y/z.png) [Trophy](https://y#t)\n"}"###,
+        )
+        .unwrap();
+
+        let ctx = egui::Context::default();
+        let mut app = App::headless(ctx.clone());
+        app.store.games = vec![sample_game()];
+        app.tab = Tab::Games;
+        app.selected = Some(620);
+        app.game_tab = GameTab::Guide;
+
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui));
+        out.drop_without_applying_deltas();
+        let (id, title, markdown) = app.psn_guide.clone().expect("guide loaded");
+        assert_eq!(id, 620);
+        assert_eq!(title, "T");
+        assert!(markdown.contains("Stage 1"));
+
+        unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crucial_import_psnprofiles_maps_titles_and_skips_unmatched() {
+        let _guard = crate::test_env_lock();
+        let dir = std::env::temp_dir().join(format!("ah-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
+
+        let collector = dir.join("psn-guides.json");
+        std::fs::write(
+            &collector,
+            r###"{"results":[
+                {"title":"Portal 2","pickedTitle":"Portal 2 Guide","pickedUrl":"/guide/1-x","markdown":"## Stage\nbody"},
+                {"title":"Nonexistent Game","pickedTitle":"n","pickedUrl":"/guide/2","markdown":"nope"},
+                {"title":"Hades","pickedTitle":"h","pickedUrl":"/guide/3","markdown":"   "}
+            ]}"###,
+        )
+        .unwrap();
+
+        let games = vec![sample_game()];
+        let (written, skipped) = providers::import_psnprofiles(&collector, &games).unwrap();
+        assert_eq!((written, skipped), (1, 2));
+        let (title, markdown) = providers::local_psnprofiles_guide(620).expect("imported");
+        assert_eq!(title, "Portal 2 Guide");
+        assert!(markdown.contains("Stage"));
+
+        unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
