@@ -134,6 +134,12 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
   on load — see the invariant in `DEV-NOTES.md`.
 - New data source: add to `providers.rs`, return a link-only `GuideInfo`
   instead of erroring, and keep the network call inside the `http.rs` helpers.
+- HTTP errors: the Steam Web API answers non-2xx with a JSON body carrying the
+  real reason (e.g. `{"playerstats":{"success":false,"error":"Requested app has
+  no stats"}}`). `http::decode_json` turns that body into the error string via
+  `error_from_body`, so the UI shows the reason instead of a bare `http 400 Bad
+  Request`. Keep new error-response shapes in `error_from_body` and test them in
+  `http::tests::crucial_error_from_body_*`.
 - New UI action: read the current state from `App`, push a `Msg` to the worker
   thread, and apply the result in the `Msg` handler in `draw`.
 - New tab: top-level tabs are the `Tab` enum (Games, Settings); per-game
