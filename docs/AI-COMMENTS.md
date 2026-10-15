@@ -140,6 +140,11 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
   `error_from_body`, so the UI shows the reason instead of a bare `http 400 Bad
   Request`. Keep new error-response shapes in `error_from_body` and test them in
   `http::tests::crucial_error_from_body_*`.
+- A game that has stats but no achievements is not an error: `steam::no_stats_error`
+  recognises Steam's `Requested app has no stats` and the local `game has no
+  achievement schema` string, and the worker answers with `Msg::NoAchievements`,
+  which records `has_achievements = Some(false)` so the prefetcher and the game
+  detail view stop asking for it.
 - New UI action: read the current state from `App`, push a `Msg` to the worker
   thread, and apply the result in the `Msg` handler in `draw`.
 - New tab: top-level tabs are the `Tab` enum (Games, Settings); per-game

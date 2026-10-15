@@ -53,6 +53,7 @@ impl Dirty {
 enum Msg {
     Games(Vec<Game>, String),
     Achievements(u32, Vec<crate::model::Achievement>, String),
+    NoAchievements(u32),
     Guides(u32, Vec<GuideInfo>, String),
     Art(u32, String),
 }
@@ -134,6 +135,16 @@ impl App {
                         status
                     };
                     self.spawn_icons(appid);
+                }
+                Msg::NoAchievements(appid) => {
+                    if let Some(game) = self.store.game_mut(appid) {
+                        game.achievements.clear();
+                        game.has_achievements = Some(false);
+                    }
+                    self.dirty.library = true;
+                    self.busy = false;
+                    self.prefetch_busy = false;
+                    self.status = "This game has no achievements.".to_owned();
                 }
                 Msg::Guides(appid, guides, status) => {
                     if let Some(game) = self.store.game_mut(appid) {
@@ -279,18 +290,28 @@ impl App {
         self.status = "Loading achievements...".to_owned();
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         std::thread::spawn(move || {
-            let mut status = String::new();
             let mut achievements =
                 match steam::achievements(&settings.steam_api_key, &settings.steam_id, appid) {
                     Ok(achievements) => achievements,
+                    Err(error) if steam::no_stats_error(&error) => {
+                        let _ = tx.send(Msg::NoAchievements(appid));
+                        ctx.request_repaint();
+                        return;
+                    }
                     Err(error) => {
-                        status = format!("Achievements unavailable: {error}");
-                        Vec::new()
+                        let _ = tx.send(Msg::Achievements(
+                            appid,
+                            Vec::new(),
+                            format!("Achievements unavailable: {error}"),
+                        ));
+                        ctx.request_repaint();
+                        return;
                     }
                 };
+            let mut status = String::new();
             if let Ok(schema) = steam::schema(&settings.steam_api_key, appid) {
                 steam::apply_schema(&mut achievements, &schema);
-            } else if status.is_empty() {
+            } else {
                 status = "Loaded achievements without names: the game schema was unavailable."
                     .to_owned();
             }
@@ -613,7 +634,7 @@ impl App {
             && self
                 .store
                 .game(appid)
-                .map(|game| game.achievements.is_empty())
+                .map(|game| game.achievements.is_empty() && game.has_achievements != Some(false))
                 .unwrap_or(false)
         {
             self.auto_achievements.insert(appid);

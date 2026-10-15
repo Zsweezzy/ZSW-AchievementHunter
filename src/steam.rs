@@ -49,6 +49,11 @@ pub fn parse_owned_games(value: &Value) -> Vec<Game> {
         .collect()
 }
 
+pub fn no_stats_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("no stats") || error.contains("no achievement schema")
+}
+
 pub fn parse_achievements(value: &Value) -> Result<Vec<Achievement>, String> {
     let stats = value
         .get("playerstats")
@@ -419,6 +424,15 @@ mod tests {
     fn crucial_achievements_without_schema_is_error() {
         let value: Value = serde_json::from_str(r#"{"playerstats":{"success":true}}"#).unwrap();
         assert!(parse_achievements(&value).is_err());
+    }
+
+    #[test]
+    fn crucial_no_stats_error_matches_only_missing_achievement_cases() {
+        assert!(no_stats_error("Requested app has no stats"));
+        assert!(no_stats_error("game has no achievement schema"));
+        assert!(!no_stats_error("http 403 Forbidden"));
+        assert!(!no_stats_error("Invalid API key"));
+        assert!(!no_stats_error("Profile is not public"));
     }
 
     #[test]
