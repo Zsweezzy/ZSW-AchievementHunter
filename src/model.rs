@@ -26,6 +26,10 @@ pub struct GuideInfo {
     pub completionist_hours: Option<f32>,
     pub difficulty: String,
     pub fetched_at: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub markdown: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -77,16 +81,23 @@ pub enum GameTab {
     Achievements,
     Flow,
     Sort,
+    Guide,
 }
 
 impl GameTab {
-    pub const ALL: [GameTab; 3] = [GameTab::Achievements, GameTab::Flow, GameTab::Sort];
+    pub const ALL: [GameTab; 4] = [
+        GameTab::Achievements,
+        GameTab::Flow,
+        GameTab::Sort,
+        GameTab::Guide,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             GameTab::Achievements => "Achievements",
             GameTab::Flow => "Flowgraph",
             GameTab::Sort => "Custom Sort",
+            GameTab::Guide => "Guide",
         }
     }
 }
