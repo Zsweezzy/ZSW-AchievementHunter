@@ -137,8 +137,13 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
 - New UI action: read the current state from `App`, push a `Msg` to the worker
   thread, and apply the result in the `Msg` handler in `draw`.
 - New tab: top-level tabs are the `Tab` enum (Games, Settings); per-game
-  sub-tabs are `GameTab` (Achievements, Flow, Sort). Both bars are drawn by the
-  shared `paint_tab` helper with a `TabStyle`.
+  sub-tabs are `GameTab` (Achievements, Flow, Sort, Guide). Both bars are drawn
+  by the shared `paint_tab` helper with a `TabStyle`.
+- Guide text rendering: the PSNProfiles guide text is imported JSON stored under
+  `<data>/guides/psnprofiles/<appid>.json` (never committed). The Guide sub-tab
+  renders it line-based, not with a markdown crate: leading `#` becomes a sized
+  heading, `![alt](url)` images are dropped, and `[text](url)` links reduce to
+  their text. Do not add a markdown dependency for this.
 - New cached image: add the destination to `paths.rs`, then check
   `path.exists()` before building the `egui::Image`, and trigger the download
   from a `spawn_*` method guarded by the `*_requested` set so it fires once.

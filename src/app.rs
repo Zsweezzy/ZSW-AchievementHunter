@@ -402,7 +402,12 @@ impl App {
             active_text: ui.visuals().text_color(),
             accent: ui.visuals().hyperlink_color,
             radius: egui::CornerRadius::same(8),
-            active_radius: egui::CornerRadius::same(9),
+            active_radius: egui::CornerRadius {
+                nw: 9,
+                ne: 9,
+                sw: 0,
+                se: 0,
+            },
             height: 36.0,
             accent_line: true,
         };
@@ -1348,10 +1353,16 @@ fn paint_tab(ui: &mut egui::Ui, style: &TabStyle, label: &str, active: bool) -> 
     };
     ui.painter().rect_filled(rect, radius, fill);
     if active && style.accent_line {
-        ui.painter().line_segment(
-            [rect.left_top(), rect.right_top()],
+        let r = rect.shrink(1.0);
+        ui.painter().add(egui::Shape::line(
+            vec![
+                r.left_bottom(),
+                r.left_top(),
+                r.right_top(),
+                r.right_bottom(),
+            ],
             egui::Stroke::new(2.0, style.accent),
-        );
+        ));
     }
     let color = if active {
         style.active_text
@@ -1468,12 +1479,13 @@ fn strip_markdown_links(line: &str) -> String {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            // image: ![alt](url) -> skip entirely
-            if let Some(end) = find_closing(bytes, i + 2, b')') {
-                i = end + 1;
-                continue;
-            }
+        if bytes[i] == b'!'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'['
+            && let Some(end) = find_closing(bytes, i + 2, b')')
+        {
+            i = end + 1;
+            continue;
         }
         if bytes[i] == b'['
             && let Some(close) = find_closing(bytes, i + 1, b']')
@@ -1728,9 +1740,6 @@ mod tests {
         };
         let art_size = egui::vec2(ART_WIDTH, ART_HEIGHT);
 
-        // The whole cell is the click target, so the artwork must never sense clicks:
-        // an interactive widget becomes the topmost hit and egui then hovers *it*
-        // instead of the cell, which killed the highlight over the art.
         ctx.run_ui(raw(Vec::new()), |ui| {
             assert!(
                 !art_widget(ui, "Portal 2", "", art_size)
@@ -1910,6 +1919,31 @@ mod tests {
 
         unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crucial_active_tab_accent_covers_sides_but_not_bottom() {
+        let ctx = egui::Context::default();
+        let mut app = App::headless(ctx.clone());
+        app.tab = Tab::Games;
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui));
+
+        let accent = out.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Path(path)
+                if path.points.len() == 4 && path.points[1].y < 80.0 && path.points[2].y < 80.0 =>
+            {
+                Some(path.points.clone())
+            }
+            _ => None,
+        });
+        out.drop_without_applying_deltas();
+        let points = accent.expect("active tab accent polyline");
+        let top = points[1].y.min(points[2].y);
+        let bottom = points[0].y.max(points[3].y);
+        assert!((points[1].y - points[2].y).abs() < 0.5, "top edge level");
+        assert!(points[0].y > top + 1.0, "left side descends past the top");
+        assert!(points[3].y > top + 1.0, "right side descends past the top");
+        assert!(bottom > top, "sides reach the bottom");
     }
 
     #[test]
