@@ -155,6 +155,17 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
   `TabStyle::active_radius`, deliberately open at the bottom so the tab still
   reads as a tab. Do not replace it with `rect_stroke`, which would draw the
   bottom edge too.
+- Achievement items: the Achievements tab uses the full-width `achievement_list`
+  row (icon + name + status + description + note). The Custom Sort and Flowgraph
+  tabs deliberately reuse a smaller, narrower chip instead: the Custom Sort tab
+  drags `small_achievement_item` (icon + name + description, max width
+  `SMALL_ITEM_WIDTH`), and the Flowgraph draws fixed `FLOW_CARD_WIDTH` x
+  `FLOW_CARD_HEIGHT` cards with the same contents via `painter` + `achievement_icon`.
+  `achievement_icon` takes an explicit size and the `api_name`/`unlocked` fields,
+  not the whole `Achievement`, so both call sites share it. Flow nodes are
+  positioned by their center and hit-tested by `hit_node` against the card rect
+  (`card_size`), not a circle radius; keep the drag clamp and `hit_node` in sync
+  with the card constants.
 - Guide text rendering: the PSNProfiles guide text is imported JSON stored under
   `<data>/guides/psnprofiles/<appid>.json` (never committed). The Guide sub-tab
   renders it line-based, not with a markdown crate: leading `#` becomes a sized

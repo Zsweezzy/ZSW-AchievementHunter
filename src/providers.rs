@@ -40,6 +40,23 @@ pub fn psnprofiles_import_path() -> Option<std::path::PathBuf> {
         .filter(|path| path.is_file())
 }
 
+pub fn local_psnprofiles_url(appid: u32) -> Option<String> {
+    let path = crate::paths::psnprofiles_guides_dir().join(format!("{appid}.json"));
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let url = value.get("url").and_then(|v| v.as_str())?.trim();
+    if url.is_empty() {
+        return None;
+    }
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return Some(url.to_owned());
+    }
+    Some(format!(
+        "https://psnprofiles.com/{}",
+        url.trim_start_matches('/')
+    ))
+}
+
 pub fn import_psnprofiles(
     path: &std::path::Path,
     games: &[Game],

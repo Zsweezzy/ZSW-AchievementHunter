@@ -1,4 +1,6 @@
-use crate::model::{self, FlowGraph, FlowNode, Game, GameTab, GuideInfo, SortMode, Tab};
+use crate::model::{
+    self, Achievement, FlowGraph, FlowNode, Game, GameTab, GuideInfo, SortMode, Tab,
+};
 use crate::providers;
 use crate::steam;
 use crate::store::Store;
@@ -7,6 +9,10 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
 const ICON_SIZE: f32 = 64.0;
+const SMALL_ICON_SIZE: f32 = 32.0;
+const SMALL_ITEM_WIDTH: f32 = 300.0;
+const FLOW_CARD_WIDTH: f32 = 240.0;
+const FLOW_CARD_HEIGHT: f32 = 80.0;
 const CELL_WIDTH: f32 = 124.0;
 const CELL_HEIGHT: f32 = 232.0;
 const ART_HEIGHT: f32 = 150.0;
@@ -710,11 +716,15 @@ impl App {
                 if ui
                     .link("open")
                     .on_hover_text(
-                        "psnprofiles.com blocks API access, so this opens their guide search for this title.",
+                        "Opens the guide you imported, or a psnprofiles guide search. \
+                         psnprofiles.com is Cloudflare-protected and may briefly check your browser.",
                     )
                     .clicked()
                 {
-                    open = Some(psnprofiles_guide_url(&game.name));
+                    open = Some(
+                        providers::local_psnprofiles_url(appid)
+                            .unwrap_or_else(|| psnprofiles_guide_url(&game.name)),
+                    );
                 }
             });
         }
@@ -848,7 +858,14 @@ impl App {
                             egui::pos2(rect.center().x, row.response.rect.center().y),
                             egui::vec2(ICON_SIZE, ICON_SIZE),
                         );
-                        achievement_icon(ui, appid, achievement, centered);
+                        achievement_icon(
+                            ui,
+                            appid,
+                            &achievement.api_name,
+                            achievement.unlocked,
+                            centered,
+                            ICON_SIZE,
+                        );
                     }
                     let response = row.response.interact(egui::Sense::click());
                     response.context_menu(|ui| {
@@ -872,12 +889,12 @@ impl App {
     }
 
     fn sort_tab(&mut self, ui: &mut egui::Ui, appid: u32) {
-        let rows: Vec<(String, String, bool)> = match self.store.game(appid) {
+        let rows: Vec<Achievement> = match self.store.game(appid) {
             Some(game) => {
                 let order = self.store.sort.get(&appid).cloned().unwrap_or_default();
                 model::sort_order_for(&game.achievements, &order)
                     .into_iter()
-                    .map(|a| (a.api_name.clone(), a.name.clone(), a.unlocked))
+                    .cloned()
                     .collect()
             }
             None => Vec::new(),
@@ -895,23 +912,17 @@ impl App {
             ui.label("No achievements cached for this game. Load them from the Games tab.");
             return;
         }
-        let mut order: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+        let mut order: Vec<String> = rows.iter().map(|a| a.api_name.clone()).collect();
         let mut pending = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for (index, (api_name, name, unlocked)) in rows.iter().enumerate() {
+                for (index, achievement) in rows.iter().enumerate() {
                     let (_, dropped) = ui.dnd_drop_zone::<usize, _>(egui::Frame::NONE, |ui| {
                         ui.dnd_drag_source(
                             egui::Id::new(("sort_row", appid, index)),
                             index,
-                            |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(if *unlocked { "[x]" } else { "[ ]" });
-                                    ui.label(name.as_str());
-                                    ui.weak(api_name.as_str());
-                                });
-                            },
+                            |ui| small_achievement_item(ui, appid, achievement),
                         );
                     });
                     if let Some(from) = dropped {
@@ -949,13 +960,13 @@ impl App {
         if seed {
             self.flow_seed(appid);
         }
-        let labels: std::collections::HashMap<String, String> = self
+        let achievements: std::collections::HashMap<String, Achievement> = self
             .store
             .game(appid)
             .map(|game| {
                 game.achievements
                     .iter()
-                    .map(|a| (a.api_name.clone(), a.name.clone()))
+                    .map(|a| (a.api_name.clone(), a.clone()))
                     .collect()
             })
             .unwrap_or_default();
@@ -963,10 +974,11 @@ impl App {
         let (response, painter) =
             ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let rect = response.rect;
-        let radius = 46.0;
+        let card_size = egui::vec2(FLOW_CARD_WIDTH, FLOW_CARD_HEIGHT);
         let accent = ui.visuals().hyperlink_color;
         let fill = ui.visuals().widgets.inactive.bg_fill;
         let text = ui.visuals().text_color();
+        let weak = ui.visuals().weak_text_color();
         let pointer = response.interact_pointer_pos();
         if graph.nodes.is_empty() {
             painter.text(
@@ -974,7 +986,7 @@ impl App {
                 egui::Align2::CENTER_CENTER,
                 "Stamp achievement nodes to start a flowgraph.",
                 egui::FontId::proportional(14.0),
-                ui.visuals().weak_text_color(),
+                weak,
             );
         }
         for (from, to) in &graph.edges {
@@ -990,35 +1002,70 @@ impl App {
         }
         for (index, node) in graph.nodes.iter().enumerate() {
             let center = rect.min + egui::vec2(node.x, node.y);
+            let card = egui::Rect::from_center_size(center, card_size);
             let active = self.flow_drag == Some(index) || self.flow_link == Some(index);
-            painter.circle_filled(center, radius, fill);
-            painter.circle_stroke(
-                center,
-                radius,
+            painter.rect_filled(card, 8.0, fill);
+            painter.rect_stroke(
+                card,
+                8.0,
                 egui::Stroke::new(if active { 3.0 } else { 1.0 }, accent),
+                egui::StrokeKind::Inside,
             );
-            let label = labels
-                .get(&node.api_name)
-                .cloned()
-                .unwrap_or_else(|| node.api_name.clone());
-            painter.text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                truncate(&label, 16),
-                egui::FontId::proportional(11.0),
-                text,
+            let icon_rect = egui::Rect::from_min_size(
+                card.min + egui::vec2(8.0, 8.0),
+                egui::vec2(SMALL_ICON_SIZE, SMALL_ICON_SIZE),
             );
+            let text_x = icon_rect.right() + 8.0;
+            let wrap = (card.right() - 8.0 - text_x).max(0.0);
+            match achievements.get(&node.api_name) {
+                Some(achievement) => {
+                    achievement_icon(
+                        ui,
+                        appid,
+                        &achievement.api_name,
+                        achievement.unlocked,
+                        icon_rect,
+                        SMALL_ICON_SIZE,
+                    );
+                    let name = painter.layout(
+                        truncate(&achievement.name, 26),
+                        egui::FontId::proportional(13.0),
+                        text,
+                        wrap,
+                    );
+                    painter.galley(egui::pos2(text_x, card.top() + 10.0), name, text);
+                    if !achievement.description.is_empty() {
+                        let description = painter.layout(
+                            truncate(&achievement.description, 52),
+                            egui::FontId::proportional(11.0),
+                            weak,
+                            wrap,
+                        );
+                        painter.galley(egui::pos2(text_x, card.top() + 30.0), description, weak);
+                    }
+                }
+                None => {
+                    painter.text(
+                        egui::pos2(text_x, card.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        truncate(&node.api_name, 24),
+                        egui::FontId::proportional(12.0),
+                        text,
+                    );
+                }
+            }
         }
         if response.drag_started() {
-            self.flow_drag = pointer.and_then(|p| hit_node(&graph, rect, p, radius));
+            self.flow_drag = pointer.and_then(|p| hit_node(&graph, rect, p, card_size));
         }
         if response.dragged()
             && let Some(index) = self.flow_drag
         {
             let delta = response.drag_delta();
             if let Some(node) = graph.nodes.get_mut(index) {
-                node.x = (node.x + delta.x).clamp(radius, (rect.width() - radius).max(radius));
-                node.y = (node.y + delta.y).clamp(radius, (rect.height() - radius).max(radius));
+                let half = egui::vec2(FLOW_CARD_WIDTH / 2.0, FLOW_CARD_HEIGHT / 2.0);
+                node.x = (node.x + delta.x).clamp(half.x, (rect.width() - half.x).max(half.x));
+                node.y = (node.y + delta.y).clamp(half.y, (rect.height() - half.y).max(half.y));
                 self.dirty.flow = true;
             }
         }
@@ -1026,7 +1073,7 @@ impl App {
             self.flow_drag = None;
         }
         if response.clicked()
-            && let Some(index) = pointer.and_then(|p| hit_node(&graph, rect, p, radius))
+            && let Some(index) = pointer.and_then(|p| hit_node(&graph, rect, p, card_size))
         {
             match self.flow_link {
                 None => self.flow_link = Some(index),
@@ -1041,7 +1088,7 @@ impl App {
             }
         }
         if response.secondary_clicked()
-            && let Some(index) = pointer.and_then(|p| hit_node(&graph, rect, p, radius))
+            && let Some(index) = pointer.and_then(|p| hit_node(&graph, rect, p, card_size))
         {
             graph.nodes.remove(index);
             graph.edges.retain(|(a, b)| *a != index && *b != index);
@@ -1419,16 +1466,17 @@ fn paint_tab(ui: &mut egui::Ui, style: &TabStyle, label: &str, active: bool) -> 
 fn achievement_icon(
     ui: &mut egui::Ui,
     appid: u32,
-    achievement: &crate::model::Achievement,
+    api_name: &str,
+    unlocked: bool,
     rect: egui::Rect,
+    size: f32,
 ) {
-    let gray = !achievement.unlocked;
-    let path = crate::paths::icon_path(appid, &achievement.api_name, gray);
+    let path = crate::paths::icon_path(appid, api_name, !unlocked);
     if path.exists() {
         ui.put(
             rect,
             egui::Image::new(format!("file://{}", path.display()))
-                .fit_to_exact_size(egui::vec2(ICON_SIZE, ICON_SIZE))
+                .fit_to_exact_size(egui::vec2(size, size))
                 .corner_radius(6.0),
         );
         return;
@@ -1438,25 +1486,44 @@ fn achievement_icon(
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        if achievement.unlocked {
-            "\u{2714}"
-        } else {
-            "?"
-        },
-        egui::FontId::proportional(22.0),
+        if unlocked { "\u{2714}" } else { "?" },
+        egui::FontId::proportional(size * 0.35),
         ui.visuals().weak_text_color(),
     );
+}
+
+fn small_achievement_item(ui: &mut egui::Ui, appid: u32, achievement: &Achievement) {
+    ui.set_max_width(SMALL_ITEM_WIDTH);
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(SMALL_ICON_SIZE, SMALL_ICON_SIZE),
+            egui::Sense::hover(),
+        );
+        ui.vertical(|ui| {
+            ui.strong(achievement.name.as_str());
+            if !achievement.description.is_empty() {
+                ui.weak(achievement.description.as_str());
+            }
+        });
+        achievement_icon(
+            ui,
+            appid,
+            &achievement.api_name,
+            achievement.unlocked,
+            rect,
+            SMALL_ICON_SIZE,
+        );
+    });
 }
 
 fn hit_node(
     graph: &FlowGraph,
     rect: egui::Rect,
     pointer: egui::Pos2,
-    radius: f32,
+    size: egui::Vec2,
 ) -> Option<usize> {
     graph.nodes.iter().position(|node| {
-        let center = rect.min + egui::vec2(node.x, node.y);
-        (center - pointer).length() <= radius
+        egui::Rect::from_center_size(rect.min + egui::vec2(node.x, node.y), size).contains(pointer)
     })
 }
 
@@ -2040,6 +2107,87 @@ mod tests {
         let (title, markdown) = providers::local_psnprofiles_guide(620).expect("imported");
         assert_eq!(title, "Portal 2 Guide");
         assert!(markdown.contains("Stage"));
+
+        unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crucial_hit_node_uses_the_card_bounds() {
+        let graph = FlowGraph {
+            nodes: vec![FlowNode {
+                api_name: "A".to_owned(),
+                x: 100.0,
+                y: 100.0,
+            }],
+            edges: Vec::new(),
+        };
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+        let size = egui::vec2(FLOW_CARD_WIDTH, FLOW_CARD_HEIGHT);
+        assert_eq!(
+            hit_node(&graph, rect, egui::pos2(100.0, 100.0), size),
+            Some(0)
+        );
+        assert_eq!(
+            hit_node(
+                &graph,
+                rect,
+                egui::pos2(100.0 + FLOW_CARD_WIDTH / 2.0 - 1.0, 100.0),
+                size
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            hit_node(
+                &graph,
+                rect,
+                egui::pos2(100.0 + FLOW_CARD_WIDTH / 2.0 + 5.0, 100.0),
+                size
+            ),
+            None
+        );
+        assert_eq!(
+            hit_node(
+                &graph,
+                rect,
+                egui::pos2(100.0, 100.0 + FLOW_CARD_HEIGHT / 2.0 + 5.0),
+                size
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn crucial_local_psnprofiles_url_prefixes_relative_guides() {
+        let _guard = crate::test_env_lock();
+        let dir = std::env::temp_dir().join(format!("ah-psnurl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
+
+        assert_eq!(providers::local_psnprofiles_url(620), None);
+
+        let guides = crate::paths::psnprofiles_guides_dir();
+        std::fs::create_dir_all(&guides).unwrap();
+        std::fs::write(
+            guides.join("620.json"),
+            r#"{"url":"/guide/1-portal-2","markdown":"x"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            providers::local_psnprofiles_url(620).as_deref(),
+            Some("https://psnprofiles.com/guide/1-portal-2")
+        );
+
+        std::fs::write(
+            guides.join("621.json"),
+            r#"{"url":"https://psnprofiles.com/guide/9-x","markdown":"x"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            providers::local_psnprofiles_url(621).as_deref(),
+            Some("https://psnprofiles.com/guide/9-x")
+        );
 
         unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
         let _ = std::fs::remove_dir_all(&dir);
