@@ -1353,6 +1353,28 @@ struct TabStyle {
     accent_line: bool,
 }
 
+fn tab_accent_points(rect: egui::Rect, radius: f32) -> Vec<egui::Pos2> {
+    const STEPS: usize = 8;
+    let r = rect.shrink(1.0);
+    let radius = radius.min(r.width() * 0.5).min(r.height());
+    let (left, right, top, bottom) = (r.left(), r.right(), r.top(), r.bottom());
+    let mut points = vec![egui::pos2(left, bottom)];
+    for (center_x, start_angle) in [
+        (left + radius, std::f32::consts::PI),
+        (right - radius, 3.0 * std::f32::consts::FRAC_PI_2),
+    ] {
+        for step in 0..=STEPS {
+            let angle = start_angle + std::f32::consts::FRAC_PI_2 * (step as f32 / STEPS as f32);
+            points.push(egui::pos2(
+                center_x + radius * angle.cos(),
+                top + radius + radius * angle.sin(),
+            ));
+        }
+    }
+    points.push(egui::pos2(right, bottom));
+    points
+}
+
 fn paint_tab(ui: &mut egui::Ui, style: &TabStyle, label: &str, active: bool) -> egui::Response {
     let font = egui::FontId::proportional(15.0);
     let galley = ui
@@ -1374,14 +1396,9 @@ fn paint_tab(ui: &mut egui::Ui, style: &TabStyle, label: &str, active: bool) -> 
     };
     ui.painter().rect_filled(rect, radius, fill);
     if active && style.accent_line {
-        let r = rect.shrink(1.0);
+        let points = tab_accent_points(rect, style.active_radius.nw as f32);
         ui.painter().add(egui::Shape::line(
-            vec![
-                r.left_bottom(),
-                r.left_top(),
-                r.right_top(),
-                r.right_bottom(),
-            ],
+            points,
             egui::Stroke::new(2.0, style.accent),
         ));
     }
@@ -1943,28 +1960,59 @@ mod tests {
     }
 
     #[test]
-    fn crucial_active_tab_accent_covers_sides_but_not_bottom() {
+    fn crucial_active_tab_accent_rounds_the_top_corners_and_skips_the_bottom() {
         let ctx = egui::Context::default();
         let mut app = App::headless(ctx.clone());
         app.tab = Tab::Games;
         let out = ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui));
 
         let accent = out.shapes.iter().find_map(|clipped| match &clipped.shape {
-            egui::Shape::Path(path)
-                if path.points.len() == 4 && path.points[1].y < 80.0 && path.points[2].y < 80.0 =>
-            {
+            egui::Shape::Path(path) if path.points.len() > 4 && path.stroke.width == 2.0 => {
                 Some(path.points.clone())
             }
             _ => None,
         });
         out.drop_without_applying_deltas();
-        let points = accent.expect("active tab accent polyline");
-        let top = points[1].y.min(points[2].y);
-        let bottom = points[0].y.max(points[3].y);
-        assert!((points[1].y - points[2].y).abs() < 0.5, "top edge level");
-        assert!(points[0].y > top + 1.0, "left side descends past the top");
-        assert!(points[3].y > top + 1.0, "right side descends past the top");
-        assert!(bottom > top, "sides reach the bottom");
+        let points = accent.expect("active tab accent path");
+
+        let bottom = points.first().unwrap().y;
+        let curve = &points[1..points.len() - 1];
+        let left = curve
+            .iter()
+            .copied()
+            .min_by(|a, b| a.x.total_cmp(&b.x))
+            .unwrap();
+        let right = curve
+            .iter()
+            .copied()
+            .max_by(|a, b| a.x.total_cmp(&b.x))
+            .unwrap();
+        let top = curve
+            .iter()
+            .copied()
+            .min_by(|a, b| a.y.total_cmp(&b.y))
+            .unwrap();
+
+        assert!(top.x > left.x + 1.0, "top-left corner curves inward");
+        assert!(top.x < right.x - 1.0, "top-right corner curves inward");
+        assert!(
+            left.y > top.y + 1.0,
+            "left side starts below the rounded corner"
+        );
+        assert!(
+            right.y > top.y + 1.0,
+            "right side starts below the rounded corner"
+        );
+        assert!(points[0].y > top.y + 1.0, "left side runs down");
+        assert!(
+            (points.last().unwrap().y - bottom).abs() < 0.5,
+            "both side ends level"
+        );
+        assert_eq!(
+            points.iter().filter(|p| (p.y - bottom).abs() < 0.5).count(),
+            2,
+            "only the two side ends reach the bottom, no bottom edge"
+        );
     }
 
     #[test]

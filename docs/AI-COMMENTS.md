@@ -149,7 +149,12 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
   thread, and apply the result in the `Msg` handler in `draw`.
 - New tab: top-level tabs are the `Tab` enum (Games, Settings); per-game
   sub-tabs are `GameTab` (Achievements, Flow, Sort, Guide). Both bars are drawn
-  by the shared `paint_tab` helper with a `TabStyle`.
+  by the shared `paint_tab` helper with a `TabStyle`. The active tab gets an
+  accent outline built by `tab_accent_points`: a ∏ path (up the left, across the
+  top, down the right) whose top corners are rounded to match
+  `TabStyle::active_radius`, deliberately open at the bottom so the tab still
+  reads as a tab. Do not replace it with `rect_stroke`, which would draw the
+  bottom edge too.
 - Guide text rendering: the PSNProfiles guide text is imported JSON stored under
   `<data>/guides/psnprofiles/<appid>.json` (never committed). The Guide sub-tab
   renders it line-based, not with a markdown crate: leading `#` becomes a sized
