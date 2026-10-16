@@ -188,11 +188,27 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
   columns) at least one card apart so stamped nodes never overlap. The canvas is
   inside a `ScrollArea::both` sized to the node extents so stamped nodes stay
   reachable; its default drag source is touch-only, so mouse card-drag is safe.
+  Clicking a second node calls `toggle_edge`: an existing edge (either
+  direction — the line is undirected) is removed, otherwise `(from, to)` is
+  added, so re-clicking a linked pair disconnects it. `flow_link` holds the
+  half-finished "from" node; the `linking… cancel` chip only shows while it is
+  set and only clears it.
 - Guide text rendering: the PSNProfiles guide text is imported JSON stored under
   `<data>/guides/psnprofiles/<appid>.json` (never committed). The Guide sub-tab
   renders it line-based, not with a markdown crate: leading `#` becomes a sized
   heading, `![alt](url)` images are dropped, and `[text](url)` links reduce to
   their text. Do not add a markdown dependency for this.
+- Per-achievement guide slices: `app::guide_slices(markdown, achievements)`
+  best-effort slices the imported guide into one blurb per achievement and
+  stores it in `Achievement.guide` (persisted; empty when no guide matches).
+  It finds a "header" line per achievement (`guide_header`: first line
+  containing the name that is a heading, has a `%`, or repeats the
+  description), then takes the lines up to the next achievement's header
+  (capped at `GUIDE_SLICE_MAX_LINES`) and drops the glued `name+desc+percent`
+  header line when it is not a real heading. It is format-guesswork, not a
+  parser: PSNProfiles layouts vary, so treat a miss as expected, not a bug.
+  Slices are (re)attached by `attach_guide_slices` when achievements load and
+  after a guide import; the row renders them inline as `guide • …`.
 - New cached image: add the destination to `paths.rs`, then check
   `path.exists()` before building the `egui::Image`, and trigger the download
   from a `spawn_*` method guarded by the `*_requested` set so it fires once.

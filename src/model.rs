@@ -13,6 +13,7 @@ pub struct Achievement {
     pub icon_gray: String,
     pub hidden: bool,
     pub note: String,
+    pub guide: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

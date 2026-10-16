@@ -19,6 +19,7 @@ const CELL_WIDTH: f32 = 124.0;
 const CELL_HEIGHT: f32 = 232.0;
 const ART_HEIGHT: f32 = 150.0;
 const ART_WIDTH: f32 = ART_HEIGHT * 2.0 / 3.0;
+const GUIDE_SLICE_MAX_LINES: usize = 12;
 
 pub struct App {
     store: Store,
@@ -134,6 +135,7 @@ impl App {
                     if let Some(game) = self.store.game_mut(appid) {
                         game.achievements = achievements;
                     }
+                    self.attach_guide_slices(appid);
                     self.dirty.library = true;
                     self.busy = false;
                     self.prefetch_busy = false;
@@ -775,6 +777,16 @@ impl App {
                                 "Imported {written} PSNProfiles guides ({skipped} skipped)."
                             );
                             self.psn_guide = None;
+                            for appid in self
+                                .store
+                                .games
+                                .iter()
+                                .map(|game| game.appid)
+                                .collect::<Vec<_>>()
+                            {
+                                self.attach_guide_slices(appid);
+                            }
+                            self.dirty.library = true;
                         }
                         Err(error) => self.status = format!("Import failed: {error}"),
                     }
@@ -796,6 +808,25 @@ impl App {
                     render_markdown_line(ui, line);
                 }
             });
+    }
+
+    fn attach_guide_slices(&mut self, appid: u32) {
+        let Some(game) = self.store.game_mut(appid) else {
+            return;
+        };
+        if game.achievements.is_empty() {
+            return;
+        }
+        let Some((_, markdown)) = providers::local_psnprofiles_guide(appid) else {
+            for achievement in &mut game.achievements {
+                achievement.guide.clear();
+            }
+            return;
+        };
+        let slices = guide_slices(&markdown, &game.achievements);
+        for (achievement, slice) in game.achievements.iter_mut().zip(slices) {
+            achievement.guide = slice;
+        }
     }
 
     fn achievement_list(&mut self, ui: &mut egui::Ui, appid: u32) {
@@ -863,6 +894,16 @@ impl App {
                                         }
                                     } else if !achievement.note.is_empty() {
                                         ui.weak(achievement.note.as_str());
+                                    }
+                                    if !achievement.guide.is_empty() {
+                                        ui.add_space(2.0);
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.weak("guide \u{2022}");
+                                            ui.label(
+                                                egui::RichText::new(achievement.guide.as_str())
+                                                    .italics(),
+                                            );
+                                        });
                                     }
                                 });
                             })
@@ -969,8 +1010,15 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             seed = ui.button("Stamp achievement nodes").clicked();
             clear = ui.button("Clear graph").clicked();
-            let linking = self.flow_link.is_some();
-            if ui.selectable_label(linking, "linking...").clicked() {
+            if self.flow_link.is_some()
+                && ui
+                    .selectable_label(true, "linking\u{2026} cancel")
+                    .on_hover_text(
+                        "First node picked. Click a second node to connect them, \
+                         click the same pair again to disconnect, or click here to cancel.",
+                    )
+                    .clicked()
+            {
                 self.flow_link = None;
             }
             let mut hide_unlocked = !self.store.settings.filter_unlocked;
@@ -1158,10 +1206,8 @@ impl App {
                     match self.flow_link {
                         None => self.flow_link = Some(index),
                         Some(from) if from != index => {
-                            if !graph.edges.contains(&(from, index)) {
-                                graph.edges.push((from, index));
-                                self.dirty.flow = true;
-                            }
+                            toggle_edge(&mut graph.edges, from, index);
+                            self.dirty.flow = true;
                             self.flow_link = None;
                         }
                         Some(_) => {}
@@ -1625,6 +1671,17 @@ fn hit_node(cards: &[egui::Rect], pointer: egui::Pos2) -> Option<usize> {
     cards.iter().rposition(|card| card.contains(pointer))
 }
 
+fn toggle_edge(edges: &mut Vec<(usize, usize)>, from: usize, to: usize) {
+    if let Some(position) = edges
+        .iter()
+        .position(|(a, b)| (*a == from && *b == to) || (*a == to && *b == from))
+    {
+        edges.remove(position);
+    } else {
+        edges.push((from, to));
+    }
+}
+
 fn color_row(ui: &mut egui::Ui, label: &str, color: &mut [u8; 3]) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
@@ -1675,6 +1732,75 @@ fn psnprofiles_guide_url(name: &str) -> String {
         }
     }
     format!("https://psnprofiles.com/search/guides?q={query}")
+}
+
+fn guide_slices(markdown: &str, achievements: &[model::Achievement]) -> Vec<String> {
+    let lines: Vec<&str> = markdown.lines().collect();
+    let lowered: Vec<String> = lines.iter().map(|line| line.to_lowercase()).collect();
+    let headers: Vec<Option<usize>> = achievements
+        .iter()
+        .map(|achievement| guide_header(&lowered, achievement))
+        .collect();
+    let mut marks: Vec<usize> = headers.iter().flatten().copied().collect();
+    marks.sort_unstable();
+    marks.dedup();
+    headers
+        .into_iter()
+        .map(|header| {
+            let Some(index) = header else {
+                return String::new();
+            };
+            let next = marks
+                .iter()
+                .find(|&&mark| mark > index)
+                .copied()
+                .unwrap_or(lines.len());
+            let end = next
+                .min(index + GUIDE_SLICE_MAX_LINES)
+                .max(index + 1)
+                .min(lines.len());
+            let slice = &lines[index..end];
+            let skip = usize::from(slice.len() > 1 && !slice[0].trim_start().starts_with('#'));
+            clean_guide(&slice[skip..])
+        })
+        .collect()
+}
+
+fn guide_header(lowered: &[String], achievement: &model::Achievement) -> Option<usize> {
+    let name = achievement.name.trim().to_lowercase();
+    if name.is_empty() {
+        return None;
+    }
+    let description = achievement.description.trim().to_lowercase();
+    let mut fallback = None;
+    for (index, line) in lowered.iter().enumerate() {
+        if !line.contains(&name) {
+            continue;
+        }
+        if line.starts_with('#')
+            || line.contains('%')
+            || (!description.is_empty() && line.contains(&description))
+        {
+            return Some(index);
+        }
+        fallback.get_or_insert(index);
+    }
+    fallback
+}
+
+fn clean_guide(lines: &[&str]) -> String {
+    let mut text = String::new();
+    for line in lines {
+        let cleaned = strip_markdown_links(line);
+        if cleaned.is_empty() {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(cleaned.trim());
+    }
+    text.trim().to_owned()
 }
 
 fn strip_markdown_links(line: &str) -> String {
@@ -1804,6 +1930,7 @@ mod tests {
                     icon_gray: String::new(),
                     hidden: false,
                     note: "my note".to_owned(),
+                    guide: String::new(),
                 },
                 Achievement {
                     api_name: "B".to_owned(),
@@ -2125,6 +2252,54 @@ mod tests {
     }
 
     #[test]
+    fn crucial_attach_guide_slices_fills_matching_achievements() {
+        let _guard = crate::test_env_lock();
+        let dir = std::env::temp_dir().join(format!("ah-slice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("guides/psnprofiles")).unwrap();
+        unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
+
+        std::fs::write(
+            dir.join("guides/psnprofiles/620.json"),
+            r###"{"title":"T","markdown":" Taking NamesDefeat a boss 92.81%Common\n\nStory\nYou will get this after the first boss.\n"}"###,
+        )
+        .unwrap();
+
+        let mut game = crate::model::Game {
+            appid: 620,
+            name: "Game".to_owned(),
+            ..Default::default()
+        };
+        game.achievements = vec![
+            Achievement {
+                name: "Taking Names".to_owned(),
+                description: "Defeat a boss".to_owned(),
+                ..Default::default()
+            },
+            Achievement {
+                name: "Unrelated".to_owned(),
+                description: "Nope".to_owned(),
+                ..Default::default()
+            },
+        ];
+
+        let ctx = egui::Context::default();
+        let mut app = App::headless(ctx);
+        app.store.games = vec![game];
+        app.attach_guide_slices(620);
+        let achievements = &app.store.game(620).unwrap().achievements;
+        assert!(
+            achievements[0].guide.contains("after the first boss"),
+            "{:?}",
+            achievements[0].guide
+        );
+        assert!(achievements[1].guide.is_empty());
+
+        unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn crucial_active_tab_accent_rounds_the_top_corners_and_skips_the_bottom() {
         let ctx = egui::Context::default();
         let mut app = App::headless(ctx.clone());
@@ -2253,6 +2428,74 @@ mod tests {
         );
         let cards = vec![lower, upper];
         assert_eq!(hit_node(&cards, egui::pos2(100.0, 100.0)), Some(1));
+    }
+
+    #[test]
+    fn crucial_guide_slices_match_each_achievement_block() {
+        let markdown = "\
+Summary Taking Names A Walk in the Park\n\
+\n\
+#### Tips\n\
+\n\
+ Taking NamesDefeat a boss 92.81%Common\n\
+\n\
+Story\n\
+You will get this trophy after defeating your first boss.\n\
+\n\
+ A Walk in the ParkDefeat every boss 72.64%Common\n\
+\n\
+Story\n\
+Defeat all five bosses in Inkwell Isle 1.\n";
+        let achievements = vec![
+            Achievement {
+                name: "Taking Names".to_owned(),
+                description: "Defeat a boss".to_owned(),
+                ..Default::default()
+            },
+            Achievement {
+                name: "A Walk in the Park".to_owned(),
+                description: "Defeat every boss".to_owned(),
+                ..Default::default()
+            },
+        ];
+        let slices = guide_slices(markdown, &achievements);
+        assert!(
+            slices[0].contains("defeating your first boss"),
+            "{:?}",
+            slices[0]
+        );
+        assert!(
+            slices[1].contains("five bosses in Inkwell Isle 1"),
+            "{:?}",
+            slices[1]
+        );
+        assert!(!slices[0].contains("five bosses"), "slices bled together");
+        assert!(
+            !slices[0].contains("Taking Names"),
+            "header was not stripped"
+        );
+    }
+
+    #[test]
+    fn crucial_guide_slices_empty_when_achievement_absent() {
+        let achievements = vec![Achievement {
+            name: "Missing Trophy".to_owned(),
+            ..Default::default()
+        }];
+        let slices = guide_slices("## Some Other Trophy\nDo the thing.\n", &achievements);
+        assert!(slices[0].is_empty());
+    }
+
+    #[test]
+    fn crucial_toggle_edge_adds_then_removes_either_direction() {
+        let mut edges = Vec::new();
+        toggle_edge(&mut edges, 0, 1);
+        assert_eq!(edges, vec![(0, 1)]);
+        toggle_edge(&mut edges, 1, 0);
+        assert!(edges.is_empty());
+        toggle_edge(&mut edges, 2, 3);
+        toggle_edge(&mut edges, 2, 3);
+        assert!(edges.is_empty());
     }
 
     #[test]
