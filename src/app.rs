@@ -103,6 +103,7 @@ impl App {
             psn_guide: None,
         };
         app.status = app.ready_status();
+        app.attach_all_guide_slices();
         app
     }
 
@@ -777,15 +778,7 @@ impl App {
                                 "Imported {written} PSNProfiles guides ({skipped} skipped)."
                             );
                             self.psn_guide = None;
-                            for appid in self
-                                .store
-                                .games
-                                .iter()
-                                .map(|game| game.appid)
-                                .collect::<Vec<_>>()
-                            {
-                                self.attach_guide_slices(appid);
-                            }
+                            self.attach_all_guide_slices();
                             self.dirty.library = true;
                         }
                         Err(error) => self.status = format!("Import failed: {error}"),
@@ -808,6 +801,18 @@ impl App {
                     render_markdown_line(ui, line);
                 }
             });
+    }
+
+    fn attach_all_guide_slices(&mut self) {
+        for appid in self
+            .store
+            .games
+            .iter()
+            .map(|game| game.appid)
+            .collect::<Vec<_>>()
+        {
+            self.attach_guide_slices(appid);
+        }
     }
 
     fn attach_guide_slices(&mut self, appid: u32) {

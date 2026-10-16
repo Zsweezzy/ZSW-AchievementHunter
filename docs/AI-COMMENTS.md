@@ -207,8 +207,9 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
   (capped at `GUIDE_SLICE_MAX_LINES`) and drops the glued `name+desc+percent`
   header line when it is not a real heading. It is format-guesswork, not a
   parser: PSNProfiles layouts vary, so treat a miss as expected, not a bug.
-  Slices are (re)attached by `attach_guide_slices` when achievements load and
-  after a guide import; the row renders them inline as `guide • …`.
+  Slices are (re)attached when achievements load, after a guide import, and once
+  at startup (`attach_all_guide_slices`) so cached achievements from a previous
+  run still get their blurbs; the row renders them inline as `guide • …`.
 - New cached image: add the destination to `paths.rs`, then check
   `path.exists()` before building the `egui::Image`, and trigger the download
   from a `spawn_*` method guarded by the `*_requested` set so it fires once.
