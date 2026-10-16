@@ -134,6 +134,14 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
   on load — see the invariant in `DEV-NOTES.md`.
 - New data source: add to `providers.rs`, return a link-only `GuideInfo`
   instead of erroring, and keep the network call inside the `http.rs` helpers.
+  Static browse/search links that need no fetch (Steam Community guides,
+  TrueAchievements, PowerPyx, IGN, GameFAQs) are appended by
+  `providers::extra_guide_links(name, appid)`, rendered as the `[more guides]`
+  row in `game_detail`.
+- Game pages hide the library controls: `games_tab` returns early into
+  `game_detail` as soon as a game is selected, so Refresh/filters/Guides-from
+  are not drawn there (they act on the library grid, not the game). The
+  guide-source toggles live in Settings.
 - HTTP errors: the Steam Web API answers non-2xx with a JSON body carrying the
   real reason (e.g. `{"playerstats":{"success":false,"error":"Requested app has
   no stats"}}`). `http::decode_json` turns that body into the error string via
@@ -157,15 +165,29 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
   bottom edge too.
 - Achievement items: the Achievements tab uses the full-width `achievement_list`
   row (icon + name + status + description + note). The Custom Sort and Flowgraph
-  tabs deliberately reuse a smaller, narrower chip instead: the Custom Sort tab
-  drags `small_achievement_item` (icon + name + description, max width
-  `SMALL_ITEM_WIDTH`), and the Flowgraph draws fixed `FLOW_CARD_WIDTH` x
-  `FLOW_CARD_HEIGHT` cards with the same contents via `painter` + `achievement_icon`.
+  tabs deliberately reuse a smaller item: the Custom Sort tab drags
+  `small_achievement_item` (a `SMALL_ITEM_WIDTH`-wide card with the icon centered
+  on the name/description block), and the Flowgraph draws `FLOW_CARD_WIDTH`-wide
+  cards with the same contents via `painter` + `achievement_icon`. Flow card
+  height is measured from the wrapped name/description galleys (min
+  `FLOW_CARD_MIN_HEIGHT`), so text is never truncated or clipped; do not go back
+  to a fixed height plus `truncate`.
   `achievement_icon` takes an explicit size and the `api_name`/`unlocked` fields,
-  not the whole `Achievement`, so both call sites share it. Flow nodes are
-  positioned by their center and hit-tested by `hit_node` against the card rect
-  (`card_size`), not a circle radius; keep the drag clamp and `hit_node` in sync
-  with the card constants.
+  not the whole `Achievement`, so both call sites share it.
+- Hidden/unlocked filtering: the shared `settings.filter_locked` /
+  `filter_unlocked` drive the Achievements, Custom Sort and Flowgraph tabs. The
+  per-tab "Hide unlocked" checkbox on Sort and Flow writes the same setting back
+  (checked == unlocked hidden) so it stays in sync with the header checkboxes.
+  Sort keeps the full order vector and only skips *rendering* filtered rows, so
+  hidden rows are never dropped from the saved order.
+- Flowgraph interaction: nodes are positioned by their center. Each frame builds
+  `card_rects` (one per node, in node order; hidden nodes get `Rect::NOTHING`) and
+  `hit_node` returns the *topmost* match via `rposition`, so grabbing an overlap
+  takes the top card, not the one underneath. Drag clamps with the grabbed card's
+  own half-extent. Keep the seed spacing (`flow_node_position`, width-aware
+  columns) at least one card apart so stamped nodes never overlap. The canvas is
+  inside a `ScrollArea::both` sized to the node extents so stamped nodes stay
+  reachable; its default drag source is touch-only, so mouse card-drag is safe.
 - Guide text rendering: the PSNProfiles guide text is imported JSON stored under
   `<data>/guides/psnprofiles/<appid>.json` (never committed). The Guide sub-tab
   renders it line-based, not with a markdown crate: leading `#` becomes a sized

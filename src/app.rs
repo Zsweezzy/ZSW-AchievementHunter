@@ -10,9 +10,11 @@ use std::time::Instant;
 
 const ICON_SIZE: f32 = 64.0;
 const SMALL_ICON_SIZE: f32 = 32.0;
-const SMALL_ITEM_WIDTH: f32 = 300.0;
+const SMALL_ITEM_WIDTH: f32 = 420.0;
 const FLOW_CARD_WIDTH: f32 = 240.0;
-const FLOW_CARD_HEIGHT: f32 = 80.0;
+const FLOW_CARD_MIN_HEIGHT: f32 = 44.0;
+const FLOW_CARD_GAP: f32 = 20.0;
+const FLOW_ROW_SPACING: f32 = 120.0;
 const CELL_WIDTH: f32 = 124.0;
 const CELL_HEIGHT: f32 = 232.0;
 const ART_HEIGHT: f32 = 150.0;
@@ -486,6 +488,10 @@ impl App {
         }
         self.spawn_art();
         self.prefetch_installed();
+        if let Some(appid) = self.selected {
+            self.game_detail(ui, appid);
+            return;
+        }
         let filters = model::Filters {
             installed_only: settings.installed_only,
             hide_no_achievements: settings.hide_no_achievements,
@@ -541,10 +547,6 @@ impl App {
             self.refresh();
         }
         ui.separator();
-        if let Some(appid) = self.selected {
-            self.game_detail(ui, appid);
-            return;
-        }
         if self.store.games.is_empty() {
             ui.add_space(24.0);
             ui.label(
@@ -727,6 +729,18 @@ impl App {
                     );
                 }
             });
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("[more guides]");
+                for (label, url) in providers::extra_guide_links(&game.name, appid) {
+                    if ui
+                        .link(label)
+                        .on_hover_text("Opens a guide search in your browser")
+                        .clicked()
+                    {
+                        open = Some(url);
+                    }
+                }
+            });
         }
         if let Some(url) = open {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -900,8 +914,13 @@ impl App {
             None => Vec::new(),
         };
         let mut reset = false;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             reset = ui.button("Reset to default order").clicked();
+            let mut hide_unlocked = !self.store.settings.filter_unlocked;
+            if ui.checkbox(&mut hide_unlocked, "Hide unlocked").changed() {
+                self.store.settings.filter_unlocked = !hide_unlocked;
+                self.dirty.settings = true;
+            }
             ui.label("Drag a row to relocate it.");
         });
         if reset {
@@ -912,12 +931,19 @@ impl App {
             ui.label("No achievements cached for this game. Load them from the Games tab.");
             return;
         }
+        let (show_locked, show_unlocked) = (
+            self.store.settings.filter_locked,
+            self.store.settings.filter_unlocked,
+        );
         let mut order: Vec<String> = rows.iter().map(|a| a.api_name.clone()).collect();
         let mut pending = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (index, achievement) in rows.iter().enumerate() {
+                    if !model::passes_filter(achievement, show_locked, show_unlocked) {
+                        continue;
+                    }
                     let (_, dropped) = ui.dnd_drop_zone::<usize, _>(egui::Frame::NONE, |ui| {
                         ui.dnd_drag_source(
                             egui::Id::new(("sort_row", appid, index)),
@@ -928,7 +954,6 @@ impl App {
                     if let Some(from) = dropped {
                         pending = Some((*from, index));
                     }
-                    ui.separator();
                 }
             });
         if let Some((from, to)) = pending {
@@ -948,6 +973,11 @@ impl App {
             if ui.selectable_label(linking, "linking...").clicked() {
                 self.flow_link = None;
             }
+            let mut hide_unlocked = !self.store.settings.filter_unlocked;
+            if ui.checkbox(&mut hide_unlocked, "Hide unlocked").changed() {
+                self.store.settings.filter_unlocked = !hide_unlocked;
+                self.dirty.settings = true;
+            }
             ui.label(
                 "Drag to move \u{2022} click two nodes to link \u{2022} right-click to delete",
             );
@@ -957,8 +987,11 @@ impl App {
             self.flow_link = None;
             self.dirty.flow = true;
         }
+        let columns = (((ui.available_width() - FLOW_CARD_GAP) / (FLOW_CARD_WIDTH + FLOW_CARD_GAP))
+            .floor()
+            .max(1.0)) as usize;
         if seed {
-            self.flow_seed(appid);
+            self.flow_seed(appid, columns);
         }
         let achievements: std::collections::HashMap<String, Achievement> = self
             .store
@@ -970,146 +1003,194 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        let (show_locked, show_unlocked) = (
+            self.store.settings.filter_locked,
+            self.store.settings.filter_unlocked,
+        );
         let mut graph = self.store.flow.remove(&appid).unwrap_or_default();
-        let (response, painter) =
-            ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
-        let rect = response.rect;
-        let card_size = egui::vec2(FLOW_CARD_WIDTH, FLOW_CARD_HEIGHT);
-        let accent = ui.visuals().hyperlink_color;
-        let fill = ui.visuals().widgets.inactive.bg_fill;
-        let text = ui.visuals().text_color();
-        let weak = ui.visuals().weak_text_color();
-        let pointer = response.interact_pointer_pos();
-        if graph.nodes.is_empty() {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "Stamp achievement nodes to start a flowgraph.",
-                egui::FontId::proportional(14.0),
-                weak,
-            );
+        let visible: Vec<bool> = graph
+            .nodes
+            .iter()
+            .map(|node| {
+                achievements
+                    .get(&node.api_name)
+                    .map(|achievement| {
+                        model::passes_filter(achievement, show_locked, show_unlocked)
+                    })
+                    .unwrap_or(true)
+            })
+            .collect();
+        let view = ui.available_size();
+        let mut content = view;
+        for node in &graph.nodes {
+            content.x = content
+                .x
+                .max(node.x + FLOW_CARD_WIDTH / 2.0 + FLOW_CARD_GAP);
+            content.y = content.y.max(node.y + FLOW_ROW_SPACING + FLOW_CARD_GAP);
         }
-        for (from, to) in &graph.edges {
-            if let (Some(a), Some(b)) = (graph.nodes.get(*from), graph.nodes.get(*to)) {
-                painter.line_segment(
-                    [
-                        rect.min + egui::vec2(a.x, a.y),
-                        rect.min + egui::vec2(b.x, b.y),
-                    ],
-                    egui::Stroke::new(2.0, accent),
-                );
-            }
-        }
-        for (index, node) in graph.nodes.iter().enumerate() {
-            let center = rect.min + egui::vec2(node.x, node.y);
-            let card = egui::Rect::from_center_size(center, card_size);
-            let active = self.flow_drag == Some(index) || self.flow_link == Some(index);
-            painter.rect_filled(card, 8.0, fill);
-            painter.rect_stroke(
-                card,
-                8.0,
-                egui::Stroke::new(if active { 3.0 } else { 1.0 }, accent),
-                egui::StrokeKind::Inside,
-            );
-            let icon_rect = egui::Rect::from_min_size(
-                card.min + egui::vec2(8.0, 8.0),
-                egui::vec2(SMALL_ICON_SIZE, SMALL_ICON_SIZE),
-            );
-            let text_x = icon_rect.right() + 8.0;
-            let wrap = (card.right() - 8.0 - text_x).max(0.0);
-            match achievements.get(&node.api_name) {
-                Some(achievement) => {
-                    achievement_icon(
-                        ui,
-                        appid,
-                        &achievement.api_name,
-                        achievement.unlocked,
-                        icon_rect,
-                        SMALL_ICON_SIZE,
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let (response, painter) =
+                    ui.allocate_painter(content, egui::Sense::click_and_drag());
+                let rect = response.rect;
+                let accent = ui.visuals().hyperlink_color;
+                let fill = ui.visuals().widgets.inactive.bg_fill;
+                let text = ui.visuals().text_color();
+                let weak = ui.visuals().weak_text_color();
+                let pointer = response.interact_pointer_pos();
+                if graph.nodes.is_empty() {
+                    painter.text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Stamp achievement nodes to start a flowgraph.",
+                        egui::FontId::proportional(14.0),
+                        weak,
                     );
-                    let name = painter.layout(
-                        truncate(&achievement.name, 26),
-                        egui::FontId::proportional(13.0),
-                        text,
-                        wrap,
-                    );
-                    painter.galley(egui::pos2(text_x, card.top() + 10.0), name, text);
-                    if !achievement.description.is_empty() {
-                        let description = painter.layout(
-                            truncate(&achievement.description, 52),
-                            egui::FontId::proportional(11.0),
-                            weak,
-                            wrap,
+                }
+                for (from, to) in &graph.edges {
+                    if !visible.get(*from).copied().unwrap_or(false)
+                        || !visible.get(*to).copied().unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    if let (Some(a), Some(b)) = (graph.nodes.get(*from), graph.nodes.get(*to)) {
+                        painter.line_segment(
+                            [
+                                rect.min + egui::vec2(a.x, a.y),
+                                rect.min + egui::vec2(b.x, b.y),
+                            ],
+                            egui::Stroke::new(2.0, accent),
                         );
-                        painter.galley(egui::pos2(text_x, card.top() + 30.0), description, weak);
                     }
                 }
-                None => {
-                    painter.text(
-                        egui::pos2(text_x, card.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        truncate(&node.api_name, 24),
-                        egui::FontId::proportional(12.0),
+                let pad = 8.0;
+                let text_x = pad + SMALL_ICON_SIZE + 8.0;
+                let wrap = (FLOW_CARD_WIDTH - text_x - pad).max(1.0);
+                let mut card_rects: Vec<egui::Rect> = Vec::with_capacity(graph.nodes.len());
+                for (index, node) in graph.nodes.iter().enumerate() {
+                    if !visible.get(index).copied().unwrap_or(true) {
+                        card_rects.push(egui::Rect::NOTHING);
+                        continue;
+                    }
+                    let center = rect.min + egui::vec2(node.x, node.y);
+                    let achievement = achievements.get(&node.api_name);
+                    let name =
+                        achievement.map_or_else(|| node.api_name.clone(), |a| a.name.clone());
+                    let description = achievement
+                        .map(|a| a.description.clone())
+                        .unwrap_or_default();
+                    let name_galley =
+                        painter.layout(name, egui::FontId::proportional(13.0), text, wrap);
+                    let name_height = name_galley.size().y;
+                    let desc_galley = (!description.is_empty()).then(|| {
+                        painter.layout(description, egui::FontId::proportional(11.0), weak, wrap)
+                    });
+                    let mut content = name_height;
+                    if let Some(desc) = &desc_galley {
+                        content += 3.0 + desc.size().y;
+                    }
+                    let height =
+                        (content.max(SMALL_ICON_SIZE) + pad * 2.0).max(FLOW_CARD_MIN_HEIGHT);
+                    let card =
+                        egui::Rect::from_center_size(center, egui::vec2(FLOW_CARD_WIDTH, height));
+                    card_rects.push(card);
+                    let active = self.flow_drag == Some(index) || self.flow_link == Some(index);
+                    painter.rect_filled(card, 8.0, fill);
+                    painter.rect_stroke(
+                        card,
+                        8.0,
+                        egui::Stroke::new(if active { 3.0 } else { 1.0 }, accent),
+                        egui::StrokeKind::Inside,
+                    );
+                    if let Some(achievement) = achievement {
+                        let icon_rect = egui::Rect::from_min_size(
+                            egui::pos2(
+                                card.left() + pad,
+                                card.top() + pad + ((content - SMALL_ICON_SIZE).max(0.0)) / 2.0,
+                            ),
+                            egui::vec2(SMALL_ICON_SIZE, SMALL_ICON_SIZE),
+                        );
+                        achievement_icon(
+                            ui,
+                            appid,
+                            &achievement.api_name,
+                            achievement.unlocked,
+                            icon_rect,
+                            SMALL_ICON_SIZE,
+                        );
+                    }
+                    painter.galley(
+                        egui::pos2(card.left() + text_x, card.top() + pad),
+                        name_galley,
                         text,
                     );
+                    if let Some(desc) = desc_galley {
+                        painter.galley(
+                            egui::pos2(card.left() + text_x, card.top() + pad + name_height + 3.0),
+                            desc,
+                            weak,
+                        );
+                    }
                 }
-            }
-        }
-        if response.drag_started() {
-            self.flow_drag = pointer.and_then(|p| hit_node(&graph, rect, p, card_size));
-        }
-        if response.dragged()
-            && let Some(index) = self.flow_drag
-        {
-            let delta = response.drag_delta();
-            if let Some(node) = graph.nodes.get_mut(index) {
-                let half = egui::vec2(FLOW_CARD_WIDTH / 2.0, FLOW_CARD_HEIGHT / 2.0);
-                node.x = (node.x + delta.x).clamp(half.x, (rect.width() - half.x).max(half.x));
-                node.y = (node.y + delta.y).clamp(half.y, (rect.height() - half.y).max(half.y));
-                self.dirty.flow = true;
-            }
-        }
-        if response.drag_stopped() {
-            self.flow_drag = None;
-        }
-        if response.clicked()
-            && let Some(index) = pointer.and_then(|p| hit_node(&graph, rect, p, card_size))
-        {
-            match self.flow_link {
-                None => self.flow_link = Some(index),
-                Some(from) if from != index => {
-                    if !graph.edges.contains(&(from, index)) {
-                        graph.edges.push((from, index));
+                if response.drag_started() {
+                    self.flow_drag = pointer.and_then(|p| hit_node(&card_rects, p));
+                }
+                if response.dragged()
+                    && let Some(index) = self.flow_drag
+                    && let Some(half) = card_rects.get(index).map(|card| card.size() / 2.0)
+                {
+                    let delta = response.drag_delta();
+                    if let Some(node) = graph.nodes.get_mut(index) {
+                        node.x =
+                            (node.x + delta.x).clamp(half.x, (rect.width() - half.x).max(half.x));
+                        node.y =
+                            (node.y + delta.y).clamp(half.y, (rect.height() - half.y).max(half.y));
                         self.dirty.flow = true;
                     }
-                    self.flow_link = None;
                 }
-                Some(_) => {}
-            }
-        }
-        if response.secondary_clicked()
-            && let Some(index) = pointer.and_then(|p| hit_node(&graph, rect, p, card_size))
-        {
-            graph.nodes.remove(index);
-            graph.edges.retain(|(a, b)| *a != index && *b != index);
-            graph.edges = graph
-                .edges
-                .iter()
-                .map(|(a, b)| {
-                    (
-                        if *a > index { *a - 1 } else { *a },
-                        if *b > index { *b - 1 } else { *b },
-                    )
-                })
-                .collect();
-            self.flow_link = None;
-            self.flow_drag = None;
-            self.dirty.flow = true;
-        }
-        self.store.flow.insert(appid, graph);
+                if response.drag_stopped() {
+                    self.flow_drag = None;
+                }
+                if response.clicked()
+                    && let Some(index) = pointer.and_then(|p| hit_node(&card_rects, p))
+                {
+                    match self.flow_link {
+                        None => self.flow_link = Some(index),
+                        Some(from) if from != index => {
+                            if !graph.edges.contains(&(from, index)) {
+                                graph.edges.push((from, index));
+                                self.dirty.flow = true;
+                            }
+                            self.flow_link = None;
+                        }
+                        Some(_) => {}
+                    }
+                }
+                if response.secondary_clicked()
+                    && let Some(index) = pointer.and_then(|p| hit_node(&card_rects, p))
+                {
+                    graph.nodes.remove(index);
+                    graph.edges.retain(|(a, b)| *a != index && *b != index);
+                    graph.edges = graph
+                        .edges
+                        .iter()
+                        .map(|(a, b)| {
+                            (
+                                if *a > index { *a - 1 } else { *a },
+                                if *b > index { *b - 1 } else { *b },
+                            )
+                        })
+                        .collect();
+                    self.flow_link = None;
+                    self.flow_drag = None;
+                    self.dirty.flow = true;
+                }
+                self.store.flow.insert(appid, graph);
+            });
     }
 
-    fn flow_seed(&mut self, appid: u32) {
+    fn flow_seed(&mut self, appid: u32, columns: usize) {
         let names: Vec<String> = self
             .store
             .game(appid)
@@ -1129,12 +1210,11 @@ impl App {
             if graph.nodes.iter().any(|n| &n.api_name == api_name) {
                 continue;
             }
-            let column = (index % 5) as f32;
-            let row = (index / 5) as f32;
+            let (x, y) = flow_node_position(index, columns);
             graph.nodes.push(FlowNode {
                 api_name: api_name.clone(),
-                x: 70.0 + column * 120.0,
-                y: 70.0 + row * 110.0,
+                x,
+                y,
             });
         }
         self.dirty.flow = true;
@@ -1494,37 +1574,55 @@ fn achievement_icon(
 
 fn small_achievement_item(ui: &mut egui::Ui, appid: u32, achievement: &Achievement) {
     ui.set_max_width(SMALL_ITEM_WIDTH);
-    ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(SMALL_ICON_SIZE, SMALL_ICON_SIZE),
-            egui::Sense::hover(),
-        );
-        ui.vertical(|ui| {
-            ui.strong(achievement.name.as_str());
-            if !achievement.description.is_empty() {
-                ui.weak(achievement.description.as_str());
+    egui::Frame::NONE
+        .fill(ui.visuals().widgets.inactive.bg_fill)
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_max_width(SMALL_ITEM_WIDTH - 20.0);
+            let mut icon_rect = None;
+            let row = ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(SMALL_ICON_SIZE, SMALL_ICON_SIZE),
+                    egui::Sense::hover(),
+                );
+                icon_rect = Some(rect);
+                ui.vertical(|ui| {
+                    ui.strong(achievement.name.as_str());
+                    if !achievement.description.is_empty() {
+                        ui.weak(achievement.description.as_str());
+                    }
+                });
+            });
+            if let Some(rect) = icon_rect {
+                let centered = egui::Rect::from_center_size(
+                    egui::pos2(rect.center().x, row.response.rect.center().y),
+                    egui::vec2(SMALL_ICON_SIZE, SMALL_ICON_SIZE),
+                );
+                achievement_icon(
+                    ui,
+                    appid,
+                    &achievement.api_name,
+                    achievement.unlocked,
+                    centered,
+                    SMALL_ICON_SIZE,
+                );
             }
         });
-        achievement_icon(
-            ui,
-            appid,
-            &achievement.api_name,
-            achievement.unlocked,
-            rect,
-            SMALL_ICON_SIZE,
-        );
-    });
 }
 
-fn hit_node(
-    graph: &FlowGraph,
-    rect: egui::Rect,
-    pointer: egui::Pos2,
-    size: egui::Vec2,
-) -> Option<usize> {
-    graph.nodes.iter().position(|node| {
-        egui::Rect::from_center_size(rect.min + egui::vec2(node.x, node.y), size).contains(pointer)
-    })
+fn flow_node_position(index: usize, columns: usize) -> (f32, f32) {
+    let columns = columns.max(1);
+    let column = (index % columns) as f32;
+    let row = (index / columns) as f32;
+    (
+        FLOW_CARD_GAP + FLOW_CARD_WIDTH / 2.0 + column * (FLOW_CARD_WIDTH + FLOW_CARD_GAP),
+        FLOW_CARD_GAP + FLOW_CARD_MIN_HEIGHT / 2.0 + row * FLOW_ROW_SPACING,
+    )
+}
+
+fn hit_node(cards: &[egui::Rect], pointer: egui::Pos2) -> Option<usize> {
+    cards.iter().rposition(|card| card.contains(pointer))
 }
 
 fn color_row(ui: &mut egui::Ui, label: &str, color: &mut [u8; 3]) -> bool {
@@ -2114,47 +2212,57 @@ mod tests {
 
     #[test]
     fn crucial_hit_node_uses_the_card_bounds() {
-        let graph = FlowGraph {
-            nodes: vec![FlowNode {
-                api_name: "A".to_owned(),
-                x: 100.0,
-                y: 100.0,
-            }],
-            edges: Vec::new(),
-        };
-        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-        let size = egui::vec2(FLOW_CARD_WIDTH, FLOW_CARD_HEIGHT);
-        assert_eq!(
-            hit_node(&graph, rect, egui::pos2(100.0, 100.0), size),
-            Some(0)
+        let card = egui::Rect::from_center_size(
+            egui::pos2(100.0, 100.0),
+            egui::vec2(FLOW_CARD_WIDTH, FLOW_CARD_MIN_HEIGHT),
         );
+        let cards = vec![card];
+        assert_eq!(hit_node(&cards, egui::pos2(100.0, 100.0)), Some(0));
         assert_eq!(
             hit_node(
-                &graph,
-                rect,
-                egui::pos2(100.0 + FLOW_CARD_WIDTH / 2.0 - 1.0, 100.0),
-                size
+                &cards,
+                egui::pos2(100.0 + FLOW_CARD_WIDTH / 2.0 - 1.0, 100.0)
             ),
             Some(0)
         );
         assert_eq!(
             hit_node(
-                &graph,
-                rect,
-                egui::pos2(100.0 + FLOW_CARD_WIDTH / 2.0 + 5.0, 100.0),
-                size
+                &cards,
+                egui::pos2(100.0 + FLOW_CARD_WIDTH / 2.0 + 5.0, 100.0)
             ),
             None
         );
         assert_eq!(
             hit_node(
-                &graph,
-                rect,
-                egui::pos2(100.0, 100.0 + FLOW_CARD_HEIGHT / 2.0 + 5.0),
-                size
+                &cards,
+                egui::pos2(100.0, 100.0 + FLOW_CARD_MIN_HEIGHT / 2.0 + 5.0)
             ),
             None
         );
+    }
+
+    #[test]
+    fn crucial_hit_node_grabs_the_topmost_of_overlapping_cards() {
+        let lower = egui::Rect::from_center_size(
+            egui::pos2(100.0, 100.0),
+            egui::vec2(FLOW_CARD_WIDTH, FLOW_CARD_MIN_HEIGHT),
+        );
+        let upper = egui::Rect::from_center_size(
+            egui::pos2(110.0, 100.0),
+            egui::vec2(FLOW_CARD_WIDTH, FLOW_CARD_MIN_HEIGHT),
+        );
+        let cards = vec![lower, upper];
+        assert_eq!(hit_node(&cards, egui::pos2(100.0, 100.0)), Some(1));
+    }
+
+    #[test]
+    fn crucial_flow_seed_positions_do_not_overlap() {
+        let first = flow_node_position(0, 4);
+        let next_column = flow_node_position(1, 4);
+        let next_row = flow_node_position(4, 4);
+        assert!(next_column.0 - first.0 >= FLOW_CARD_WIDTH);
+        assert!(next_row.1 - first.1 >= FLOW_CARD_MIN_HEIGHT);
+        assert_eq!(flow_node_position(0, 0), flow_node_position(0, 1));
     }
 
     #[test]

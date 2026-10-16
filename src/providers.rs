@@ -122,6 +122,26 @@ pub fn steamhunters_achievements_url(appid: u32) -> String {
     format!("https://steamhunters.com/api/apps/{appid}/achievements")
 }
 
+pub fn extra_guide_links(name: &str, appid: u32) -> Vec<(&'static str, String)> {
+    let query = crate::http::encode_query(name);
+    vec![
+        (
+            "Steam Community",
+            format!("https://steamcommunity.com/app/{appid}/guides/"),
+        ),
+        (
+            "TrueAchievements",
+            format!("https://www.trueachievements.com/searchresults.aspx?searchterm={query}"),
+        ),
+        ("PowerPyx", format!("https://www.powerpyx.com/?s={query}")),
+        ("IGN", format!("https://www.ign.com/search?q={query}")),
+        (
+            "GameFAQs",
+            format!("https://gamefaqs.gamespot.com/search?game={query}"),
+        ),
+    ]
+}
+
 pub fn fetch_guides(game: &Game, settings: &Settings) -> (Vec<GuideInfo>, Vec<String>) {
     let mut guides = Vec::new();
     let mut errors = Vec::new();
@@ -601,5 +621,17 @@ mod tests {
         let value: Value = serde_json::from_str(r#"{"data":[{}]}"#).unwrap();
         let guide = parse_hltb(&value, "", "url".to_owned());
         assert!(guide.summary.contains("main"));
+    }
+
+    #[test]
+    fn crucial_extra_guide_links_cover_common_sources() {
+        let links = extra_guide_links("\u{14c}kami", 620);
+        assert!(links.iter().all(|(_, url)| url.starts_with("https://")));
+        assert!(
+            links
+                .iter()
+                .any(|(source, url)| *source == "Steam Community" && url.contains("/app/620/"))
+        );
+        assert!(links.iter().any(|(_, url)| url.contains("%C5%8Ckami")));
     }
 }
