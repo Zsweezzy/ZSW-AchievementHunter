@@ -1745,7 +1745,7 @@ fn psnprofiles_guide_url(name: &str) -> String {
 
 fn guide_slices(markdown: &str, achievements: &[model::Achievement]) -> Vec<String> {
     let lines: Vec<&str> = markdown.lines().collect();
-    let lowered: Vec<String> = lines.iter().map(|line| line.to_lowercase()).collect();
+    let lowered: Vec<String> = lines.iter().map(|line| normalize_match(line)).collect();
     let headers: Vec<Option<usize>> = achievements
         .iter()
         .map(|achievement| guide_header(&lowered, achievement))
@@ -1776,11 +1776,11 @@ fn guide_slices(markdown: &str, achievements: &[model::Achievement]) -> Vec<Stri
 }
 
 fn guide_header(lowered: &[String], achievement: &model::Achievement) -> Option<usize> {
-    let name = achievement.name.trim().to_lowercase();
+    let name = normalize_match(&achievement.name);
     if name.is_empty() {
         return None;
     }
-    let description = achievement.description.trim().to_lowercase();
+    let description = normalize_match(&achievement.description);
     let mut fallback = None;
     for (index, line) in lowered.iter().enumerate() {
         if !line.contains(&name) {
@@ -1795,6 +1795,19 @@ fn guide_header(lowered: &[String], achievement: &model::Achievement) -> Option<
         fallback.get_or_insert(index);
     }
     fallback
+}
+
+fn normalize_match(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\u{2018}' | '\u{2019}' | '\u{02bc}' | '`' | '\u{00b4}' => '\'',
+            '\u{201c}' | '\u{201d}' => '"',
+            _ => c,
+        })
+        .collect::<String>()
+        .to_lowercase()
+        .trim()
+        .to_owned()
 }
 
 fn clean_guide(lines: &[&str]) -> String {
@@ -2547,6 +2560,24 @@ Defeat all five bosses in Inkwell Isle 1.\n";
             !slices[0].contains("Taking Names"),
             "header was not stripped"
         );
+    }
+
+    #[test]
+    fn crucial_guide_slices_match_curly_apostrophes() {
+        let markdown = "THIS CAN'T BE HEALTHY\n\nDrink 50 energy drinks.\n\nTHIS PLACE ISN'T SO BAD\n\nSurvive 25 days.";
+        let achievements = vec![
+            Achievement {
+                name: "THIS CAN\u{2019}T BE HEALTHY".to_owned(),
+                ..Default::default()
+            },
+            Achievement {
+                name: "THIS PLACE ISN\u{2019}T SO BAD".to_owned(),
+                ..Default::default()
+            },
+        ];
+        let slices = guide_slices(markdown, &achievements);
+        assert!(slices[0].contains("50 energy drinks"), "{:?}", slices[0]);
+        assert!(slices[1].contains("25 days"), "{:?}", slices[1]);
     }
 
     #[test]

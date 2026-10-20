@@ -99,7 +99,10 @@ draw a flowgraph of them.
   `achievement-hunter --import-guide "<game name|appid>" <page.html>`.
   `providers::page_to_guide` strips tags, scripts, styles, nav/footer, comments
   and decodes entities, then collapses whitespace; a typical page drops to a few
-  percent of its size. The result is written to the same
+  percent of its size. Steam guide pages are additionally scoped to their
+  `guide subSections` container, so site chrome, the table of contents and the
+  comments never reach the file. Achievement matching normalises curly
+  apostrophes/quotes, since Steam names use `’` while many guides type `'`. The result is written to the same
   `<data>/guides/psnprofiles/<appid>.json`, so the app slices it into each
   achievement exactly like a collector import. The command resolves the game by
   exact or unique partial name (or `appid`) against the loaded library. Run it

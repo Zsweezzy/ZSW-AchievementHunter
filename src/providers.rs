@@ -142,7 +142,10 @@ fn looks_like_html(raw: &str) -> bool {
 }
 
 fn html_to_text(raw: &str) -> String {
-    let cleaned = strip_element(raw, "title");
+    // Steam guide pages put the actual guide in one container; scoping to it
+    // drops the site chrome, table of contents and comments in one step.
+    let scoped = extract_div(raw, "class=\"guide subsections\"").unwrap_or_else(|| raw.to_owned());
+    let cleaned = strip_element(&scoped, "title");
     let cleaned = strip_element(&cleaned, "script");
     let cleaned = strip_element(&cleaned, "style");
     let cleaned = strip_element(&cleaned, "noscript");
@@ -174,6 +177,41 @@ fn html_to_text(raw: &str) -> String {
     }
     out.push_str(rest);
     decode_entities(&out)
+}
+
+/// Return the outer HTML of the first `<div>` whose opening tag contains
+/// `marker`, by balancing nested `<div>`/`</div>` tags.
+fn extract_div(input: &str, marker: &str) -> Option<String> {
+    let lower = input.to_ascii_lowercase();
+    let at = lower.find(&marker.to_ascii_lowercase())?;
+    let start = lower[..at].rfind('<')?;
+    let mut depth = 0i32;
+    let mut i = start;
+    while let Some(offset) = lower[i..].find('<') {
+        let pos = i + offset;
+        let rest = &lower[pos..];
+        let opens = rest.starts_with("<div")
+            && rest[4..]
+                .chars()
+                .next()
+                .is_some_and(|c| c == '>' || c == '/' || c.is_whitespace());
+        let closes = rest.starts_with("</div")
+            && rest[5..]
+                .chars()
+                .next()
+                .is_some_and(|c| c == '>' || c.is_whitespace());
+        if opens {
+            depth += 1;
+        } else if closes {
+            depth -= 1;
+            if depth == 0 {
+                let end = pos + lower[pos..].find('>')? + 1;
+                return Some(input[start..end].to_owned());
+            }
+        }
+        i = pos + 1;
+    }
+    None
 }
 
 /// Drop `<element …>…</element>` blocks (case-insensitive).
@@ -893,6 +931,31 @@ mod tests {
             page_to_guide("&lt;tag&gt; &amp; &quot;quote&quot;"),
             "<tag> & \"quote\""
         );
+    }
+
+    #[test]
+    fn crucial_page_to_guide_keeps_only_the_steam_guide_body() {
+        let html = r#"<html><body>
+            <div class="responsive_page_menu_ctn">NAVJUNK</div>
+            <div class="guide subSections">
+                <div class="subSection detailBox" id="1">
+                    <div class="subSectionTitle">Trophy One</div>
+                    <div class="subSectionDesc">Do the thing.<div>Nested.</div></div>
+                </div>
+                <div class="subSection detailBox" id="2">
+                    <div class="subSectionTitle">Trophy Two</div>
+                    <div class="subSectionDesc">Do the other thing.</div>
+                </div>
+            </div>
+            <div class="comments">FOOTJUNK</div>
+        </body></html>"#;
+        let guide = page_to_guide(html);
+        assert!(guide.contains("Trophy One"), "{guide}");
+        assert!(guide.contains("Do the thing."));
+        assert!(guide.contains("Nested."));
+        assert!(guide.contains("Trophy Two"));
+        assert!(!guide.contains("NAVJUNK"));
+        assert!(!guide.contains("FOOTJUNK"));
     }
 
     #[test]
