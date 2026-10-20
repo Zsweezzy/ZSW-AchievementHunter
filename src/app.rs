@@ -872,6 +872,9 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // Without this a long unbreakable run (a guide's "-----" rule) widens the
+                // scroll content, and the row separators draw past the viewport edge.
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 for achievement in &mut game.achievements {
                     if !model::passes_filter(achievement, show_locked, show_unlocked) {
                         continue;
