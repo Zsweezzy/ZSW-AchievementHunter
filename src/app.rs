@@ -11,6 +11,8 @@ use std::time::Instant;
 
 const ICON_SIZE: f32 = 64.0;
 const SMALL_ICON_SIZE: f32 = 32.0;
+/// Guides longer than this start folded, so one long list cannot dominate the list.
+const GUIDE_FOLD_LINES: usize = 8;
 const SMALL_ITEM_WIDTH: f32 = 420.0;
 const FLOW_CARD_WIDTH: f32 = 240.0;
 const FLOW_CARD_MIN_HEIGHT: f32 = 44.0;
@@ -42,6 +44,8 @@ pub struct App {
     note_edit: Option<String>,
     prefetch: VecDeque<u32>,
     prefetch_busy: bool,
+    /// api_names whose long guide the user expanded this session.
+    expanded: HashSet<String>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -100,6 +104,7 @@ impl App {
             note_edit: None,
             prefetch: VecDeque::new(),
             prefetch_busy: false,
+            expanded: HashSet::new(),
         };
         app.status = app.ready_status();
         app.attach_all_guide_slices();
@@ -847,7 +852,13 @@ impl App {
     }
 
     fn achievement_list(&mut self, ui: &mut egui::Ui, appid: u32) {
-        if providers::local_psnprofiles_guide(appid).is_none() {
+        // Never call local_psnprofiles_guide here: it reads and parses the whole guide
+        // file, and this runs every frame. Sliced guide text is the cheap equivalent.
+        let needs_import = self
+            .store
+            .game(appid)
+            .is_none_or(|game| game.achievements.iter().all(|a| a.guide.is_empty()));
+        if needs_import {
             self.import_guide_button(ui);
             ui.separator();
         }
@@ -862,6 +873,7 @@ impl App {
         let mut close_edit = false;
         let mut note_edit = self.note_edit.clone();
         let mut checks = self.store.checks.get(&appid).cloned().unwrap_or_default();
+        let mut expanded = self.expanded.clone();
         let Some(game) = self.store.game_mut(appid) else {
             return;
         };
@@ -891,6 +903,10 @@ impl App {
                                 );
                                 icon_rect = Some(rect);
                                 ui.vertical(|ui| {
+                                    // Give the text column a definite width so wrapped labels
+                                    // report their real height; otherwise the row under-measures
+                                    // and the next row paints on top of it.
+                                    ui.set_width(ui.available_width());
                                     ui.horizontal_wrapped(|ui| {
                                         ui.strong(achievement.name.as_str());
                                         if achievement.hidden {
@@ -925,33 +941,56 @@ impl App {
                                     }
                                     if !achievement.guide.is_empty() {
                                         ui.add_space(2.0);
-                                        let checkable = checklist_lines(&achievement.guide);
-                                        let done = checks
-                                            .entry(achievement.api_name.clone())
-                                            .or_default();
-                                        ui.vertical(|ui| {
-                                            for line in achievement.guide.lines() {
-                                                if line.trim().is_empty() {
-                                                    ui.add_space(2.0);
-                                                    continue;
-                                                }
-                                                if checkable.contains(line) {
-                                                    let key = normalize_match(line);
-                                                    let mut on = done.contains(&key);
-                                                    let text = egui::RichText::new(line).italics();
-                                                    if ui.checkbox(&mut on, text).changed() {
-                                                        if on {
-                                                            done.insert(key);
-                                                        } else {
-                                                            done.remove(&key);
-                                                        }
-                                                        touched = true;
-                                                    }
+                                        let total = achievement.guide.lines().count();
+                                        let long = total > GUIDE_FOLD_LINES;
+                                        let folded =
+                                            long && !expanded.contains(&achievement.api_name);
+                                        if long {
+                                            let label = if folded {
+                                                format!("Show guide ({total} lines)")
+                                            } else {
+                                                format!("Hide guide ({total} lines)")
+                                            };
+                                            if ui.small_button(label).clicked() {
+                                                if folded {
+                                                    expanded.insert(achievement.api_name.clone());
                                                 } else {
-                                                    ui.label(egui::RichText::new(line).italics());
+                                                    expanded.remove(&achievement.api_name);
                                                 }
                                             }
-                                        });
+                                        }
+                                        if !folded {
+                                            let checkable = checklist_lines(&achievement.guide);
+                                            let done = checks
+                                                .entry(achievement.api_name.clone())
+                                                .or_default();
+                                            ui.vertical(|ui| {
+                                                for line in achievement.guide.lines() {
+                                                    if line.trim().is_empty() {
+                                                        ui.add_space(2.0);
+                                                        continue;
+                                                    }
+                                                    if checkable.contains(line) {
+                                                        let key = normalize_match(line);
+                                                        let mut on = done.contains(&key);
+                                                        let text =
+                                                            egui::RichText::new(line).italics();
+                                                        if ui.checkbox(&mut on, text).changed() {
+                                                            if on {
+                                                                done.insert(key);
+                                                            } else {
+                                                                done.remove(&key);
+                                                            }
+                                                            touched = true;
+                                                        }
+                                                    } else {
+                                                        ui.label(
+                                                            egui::RichText::new(line).italics(),
+                                                        );
+                                                    }
+                                                }
+                                            });
+                                        }
                                     }
                                 });
                             })
@@ -986,6 +1025,7 @@ impl App {
                 }
             });
         self.note_edit = if close_edit { None } else { note_edit };
+        self.expanded = expanded;
         if touched {
             self.store.checks.insert(appid, checks);
             self.dirty.checks = true;
@@ -1558,6 +1598,7 @@ impl App {
             note_edit: None,
             prefetch: VecDeque::new(),
             prefetch_busy: false,
+            expanded: HashSet::new(),
         }
     }
 }
@@ -2422,6 +2463,93 @@ mod tests {
         assert!(!guide.contains("---"), "rule kept, would clip: {guide:?}");
         assert!(guide.contains("Survive day 50"));
         assert!(guide.contains("and good luck"));
+    }
+
+    #[test]
+    fn crucial_achievement_rows_do_not_overlap() {
+        let _guard = crate::test_env_lock();
+        let dir = std::env::temp_dir().join(format!("ah-overlap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
+
+        // Long enough to wrap over several visual lines, which is what made the
+        // row under-measure and paint over its neighbour.
+        let sentence = "A sentence long enough to wrap over several visual lines when the \
+                        row is narrow, repeated for effect. ";
+        let wide = sentence.repeat(3);
+        let mut game = crate::model::Game {
+            appid: 1,
+            name: "G".to_owned(),
+            ..Default::default()
+        };
+        // A tall row: one wrapping prose line plus a long checklist, with every
+        // guide expanded. This is the shape that painted over its neighbour.
+        game.achievements = (0..4)
+            .map(|i| {
+                let guide = std::iter::once(wide.clone())
+                    .chain((0..15).map(|j| format!("1x item {i}-{j}")))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Achievement {
+                    api_name: format!("a{i}"),
+                    name: format!("ACH {i}"),
+                    description: wide.clone(),
+                    guide,
+                    ..Default::default()
+                }
+            })
+            .collect();
+
+        let ctx = egui::Context::default();
+        let mut app = App::headless(ctx.clone());
+        app.store.games = vec![game];
+        app.store.settings.filter_locked = true;
+        app.store.settings.filter_unlocked = true;
+        app.tab = Tab::Games;
+        app.selected = Some(1);
+        app.game_tab = GameTab::Achievements;
+        for i in 0..4 {
+            app.expanded.insert(format!("a{i}"));
+        }
+
+        let mut input = egui::RawInput::default();
+        input.screen_rect =
+            Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(947.0, 510.0)));
+        let out = ctx.run_ui(input, |ui| app.achievement_list(ui, 1));
+        let rects = text_rects(&out);
+        assert!(rects.len() > 20, "expected text, got {}", rects.len());
+        for (index, a) in rects.iter().enumerate() {
+            for b in &rects[index + 1..] {
+                let overlap = a.intersect(*b);
+                assert!(
+                    overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                    "text overlaps, rows under-measured: {a:?} vs {b:?}"
+                );
+            }
+        }
+
+        out.drop_without_applying_deltas();
+        unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every laid-out text run, so a test can prove rows do not paint over each other.
+    fn text_rects(output: &egui::FullOutput) -> Vec<egui::Rect> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<egui::Rect>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    out.push(egui::Rect::from_min_size(text.pos, text.galley.size()));
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
     }
 
     #[test]
