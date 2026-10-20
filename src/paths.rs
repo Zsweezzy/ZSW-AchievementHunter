@@ -62,6 +62,10 @@ pub fn sort_path() -> PathBuf {
     data_dir().join("sort.json")
 }
 
+pub fn checks_path() -> PathBuf {
+    data_dir().join("checks.json")
+}
+
 pub fn ensure_dirs() -> std::io::Result<()> {
     std::fs::create_dir_all(art_dir())?;
     std::fs::create_dir_all(icons_dir())?;

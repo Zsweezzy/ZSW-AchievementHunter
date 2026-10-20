@@ -2,6 +2,7 @@ use crate::model::{
     self, Achievement, FlowGraph, FlowNode, Game, GameTab, GuideInfo, SortMode, Tab,
 };
 use crate::providers;
+use crate::sotf;
 use crate::steam;
 use crate::store::Store;
 use std::collections::{HashSet, VecDeque};
@@ -19,7 +20,6 @@ const CELL_WIDTH: f32 = 124.0;
 const CELL_HEIGHT: f32 = 232.0;
 const ART_HEIGHT: f32 = 150.0;
 const ART_WIDTH: f32 = ART_HEIGHT * 2.0 / 3.0;
-const GUIDE_SLICE_MAX_LINES: usize = 12;
 
 pub struct App {
     store: Store,
@@ -42,7 +42,6 @@ pub struct App {
     note_edit: Option<String>,
     prefetch: VecDeque<u32>,
     prefetch_busy: bool,
-    psn_guide: Option<(u32, String, String)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -51,11 +50,12 @@ struct Dirty {
     library: bool,
     flow: bool,
     sort: bool,
+    checks: bool,
 }
 
 impl Dirty {
     fn any(self) -> bool {
-        self.settings || self.library || self.flow || self.sort
+        self.settings || self.library || self.flow || self.sort || self.checks
     }
 }
 
@@ -100,7 +100,6 @@ impl App {
             note_edit: None,
             prefetch: VecDeque::new(),
             prefetch_busy: false,
-            psn_guide: None,
         };
         app.status = app.ready_status();
         app.attach_all_guide_slices();
@@ -407,6 +406,9 @@ impl App {
         }
         if self.dirty.sort {
             let _ = self.store.save_sort();
+        }
+        if self.dirty.checks {
+            let _ = self.store.save_checks();
         }
         self.dirty = Dirty::default();
         self.save_at = None;
@@ -755,56 +757,28 @@ impl App {
             GameTab::Achievements => self.achievement_list(ui, appid),
             GameTab::Flow => self.flow_tab(ui, appid),
             GameTab::Sort => self.sort_tab(ui, appid),
-            GameTab::Guide => self.guide_text_tab(ui, appid),
         }
     }
 
-    fn guide_text_tab(&mut self, ui: &mut egui::Ui, appid: u32) {
-        if self.psn_guide.as_ref().map(|(id, _, _)| *id) != Some(appid) {
-            self.psn_guide = providers::local_psnprofiles_guide(appid)
-                .map(|(title, markdown)| (appid, title, markdown));
-        }
-        let Some((_, title, markdown)) = &self.psn_guide else {
-            ui.label("No PSNProfiles guide text imported for this game.");
-            ui.weak("Run the collector in your browser, then import the JSON into the guides/psnprofiles folder.");
-            ui.weak(
-                "Or copy the guide page into a file and run \
-                 achievement-hunter --import-guide \"<game>\" <page.html>",
-            );
-            if let Some(path) = providers::psnprofiles_import_path() {
-                if ui
-                    .button(format!("Import guide text from {}", path.display()))
-                    .clicked()
-                {
-                    match providers::import_psnprofiles(&path, &self.store.games) {
-                        Ok((written, skipped)) => {
-                            self.status = format!(
-                                "Imported {written} PSNProfiles guides ({skipped} skipped)."
-                            );
-                            self.psn_guide = None;
-                            self.attach_all_guide_slices();
-                            self.dirty.library = true;
-                        }
-                        Err(error) => self.status = format!("Import failed: {error}"),
-                    }
-                }
-            } else {
-                ui.weak("Place the collector output at <data>/psn-guides.json or ~/Downloads/psn-guides.json, then reopen this tab.");
-            }
+    /// The Guide tab is gone; keep the one thing it owned that the Achievements tab lacks.
+    fn import_guide_button(&mut self, ui: &mut egui::Ui) {
+        let Some(path) = providers::psnprofiles_import_path() else {
             return;
         };
-        ui.horizontal_wrapped(|ui| {
-            ui.strong(title.as_str());
-            ui.weak(format!("{} characters", markdown.chars().count()));
-        });
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for line in markdown.lines() {
-                    render_markdown_line(ui, line);
+        if ui
+            .button(format!("Import guide text from {}", path.display()))
+            .clicked()
+        {
+            match providers::import_psnprofiles(&path, &self.store.games) {
+                Ok((written, skipped)) => {
+                    self.status =
+                        format!("Imported {written} PSNProfiles guides ({skipped} skipped).");
+                    self.attach_all_guide_slices();
+                    self.dirty.library = true;
                 }
-            });
+                Err(error) => self.status = format!("Import failed: {error}"),
+            }
+        }
     }
 
     fn attach_all_guide_slices(&mut self) {
@@ -838,7 +812,48 @@ impl App {
         }
     }
 
+    /// Tick the guide checklists the save already answers, for Sons Of The Forest.
+    fn scan_sotf(&mut self, appid: u32) {
+        let guides: Vec<(String, String)> = self
+            .store
+            .game(appid)
+            .map(|game| {
+                game.achievements
+                    .iter()
+                    .filter(|a| !a.guide.is_empty())
+                    .map(|a| (a.api_name.clone(), a.guide.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let found = match sotf::scan() {
+            Ok(found) => found,
+            Err(error) => {
+                self.status = format!("Save scan failed: {error}");
+                return;
+            }
+        };
+        let checks = self.store.checks.entry(appid).or_default();
+        let mut ticked = 0usize;
+        for (api_name, guide) in guides {
+            let done = checks.entry(api_name).or_default();
+            for key in save_tick_lines(&guide, &found) {
+                if done.insert(key) {
+                    ticked += 1;
+                }
+            }
+        }
+        self.dirty.checks = true;
+        self.status = format!("Save scan: ticked {ticked} checklist items.");
+    }
+
     fn achievement_list(&mut self, ui: &mut egui::Ui, appid: u32) {
+        if providers::local_psnprofiles_guide(appid).is_none() {
+            self.import_guide_button(ui);
+            ui.separator();
+        }
+        if appid == sotf::APPID && ui.button("Scan Sons Of The Forest save").clicked() {
+            self.scan_sotf(appid);
+        }
         let (show_locked, show_unlocked) = (
             self.store.settings.filter_locked,
             self.store.settings.filter_unlocked,
@@ -846,6 +861,7 @@ impl App {
         let mut touched = false;
         let mut close_edit = false;
         let mut note_edit = self.note_edit.clone();
+        let mut checks = self.store.checks.get(&appid).cloned().unwrap_or_default();
         let Some(game) = self.store.game_mut(appid) else {
             return;
         };
@@ -906,12 +922,32 @@ impl App {
                                     }
                                     if !achievement.guide.is_empty() {
                                         ui.add_space(2.0);
-                                        ui.horizontal_wrapped(|ui| {
-                                            ui.weak("guide \u{2022}");
-                                            ui.label(
-                                                egui::RichText::new(achievement.guide.as_str())
-                                                    .italics(),
-                                            );
+                                        let checkable = checklist_lines(&achievement.guide);
+                                        let done = checks
+                                            .entry(achievement.api_name.clone())
+                                            .or_default();
+                                        ui.vertical(|ui| {
+                                            for line in achievement.guide.lines() {
+                                                if line.trim().is_empty() {
+                                                    ui.add_space(2.0);
+                                                    continue;
+                                                }
+                                                if checkable.contains(line) {
+                                                    let key = normalize_match(line);
+                                                    let mut on = done.contains(&key);
+                                                    let text = egui::RichText::new(line).italics();
+                                                    if ui.checkbox(&mut on, text).changed() {
+                                                        if on {
+                                                            done.insert(key);
+                                                        } else {
+                                                            done.remove(&key);
+                                                        }
+                                                        touched = true;
+                                                    }
+                                                } else {
+                                                    ui.label(egui::RichText::new(line).italics());
+                                                }
+                                            }
                                         });
                                     }
                                 });
@@ -948,6 +984,8 @@ impl App {
             });
         self.note_edit = if close_edit { None } else { note_edit };
         if touched {
+            self.store.checks.insert(appid, checks);
+            self.dirty.checks = true;
             self.dirty.library = true;
         }
     }
@@ -1517,7 +1555,6 @@ impl App {
             note_edit: None,
             prefetch: VecDeque::new(),
             prefetch_busy: false,
-            psn_guide: None,
         }
     }
 }
@@ -1743,7 +1780,7 @@ fn psnprofiles_guide_url(name: &str) -> String {
     format!("https://psnprofiles.com/search/guides?q={query}")
 }
 
-fn guide_slices(markdown: &str, achievements: &[model::Achievement]) -> Vec<String> {
+pub(crate) fn guide_slices(markdown: &str, achievements: &[model::Achievement]) -> Vec<String> {
     let lines: Vec<&str> = markdown.lines().collect();
     let lowered: Vec<String> = lines.iter().map(|line| normalize_match(line)).collect();
     let headers: Vec<Option<usize>> = achievements
@@ -1764,10 +1801,7 @@ fn guide_slices(markdown: &str, achievements: &[model::Achievement]) -> Vec<Stri
                 .find(|&&mark| mark > index)
                 .copied()
                 .unwrap_or(lines.len());
-            let end = next
-                .min(index + GUIDE_SLICE_MAX_LINES)
-                .max(index + 1)
-                .min(lines.len());
+            let end = next.max(index + 1).min(lines.len());
             let slice = &lines[index..end];
             let skip = usize::from(slice.len() > 1 && !slice[0].trim_start().starts_with('#'));
             clean_guide(&slice[skip..])
@@ -1810,19 +1844,76 @@ fn normalize_match(text: &str) -> String {
         .to_owned()
 }
 
-fn clean_guide(lines: &[&str]) -> String {
-    let mut text = String::new();
-    for line in lines {
-        let cleaned = strip_markdown_links(line);
-        if cleaned.is_empty() {
+/// Keeps the guide's line structure: egui collapses newlines inside one label, so the
+/// achievement row renders these lines one by one.
+/// A guide slice renders as a checklist when it holds a run of >= 3 short bare lines,
+/// which is how psnprofiles writes item lists ("bacon bite", "brain bite", ...).
+/// Prose guides ("Same as the Tradesman achievement just build with logs.") never match.
+/// shortcut: section headings in all caps ("FOOD AND SNACKS") also match; drop them if a
+/// guide gains a reliable heading marker.
+/// Which checklist lines the save answers, keyed exactly the way the checkbox reads
+/// them. Mixing in `sotf::item_key` here would make the scan report ticks the UI
+/// never shows, because it folds plurals ("crunchie wunchies" -> "crunchie wunchie").
+fn save_tick_lines(guide: &str, found: &std::collections::BTreeSet<String>) -> Vec<String> {
+    checklist_lines(guide)
+        .into_iter()
+        .filter(|line| sotf::line_done(line, found))
+        .map(normalize_match)
+        .collect()
+}
+
+pub(crate) fn checklist_lines(guide: &str) -> HashSet<&str> {
+    let lines: Vec<&str> = guide.lines().collect();
+    fn bare(line: &str) -> bool {
+        let t = line.trim();
+        !t.is_empty()
+            && !t.starts_with('#')
+            && t.chars().count() <= 48
+            && !matches!(t.chars().last(), Some('.' | '!' | '?' | ':'))
+    }
+    let mut out: HashSet<&str> = HashSet::new();
+    let mut run = 0usize;
+    let mut start = 0usize; // index of the first line in the current run
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            continue; // blank lines separate list items but do not end the run
+        }
+        if !bare(line) {
+            run = 0;
             continue;
         }
-        if !text.is_empty() {
-            text.push(' ');
+        if run == 0 {
+            start = i;
         }
-        text.push_str(cleaned.trim());
+        run += 1;
+        if run >= 3 {
+            for item in &lines[start..=i] {
+                if !item.trim().is_empty() {
+                    out.insert(item.trim());
+                }
+            }
+        }
     }
-    text.trim().to_owned()
+    out
+}
+
+fn clean_guide(lines: &[&str]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in lines {
+        let cleaned = strip_markdown_links(line);
+        if cleaned.trim().is_empty() {
+            if out.last().is_some_and(|l| l.is_empty()) {
+                continue;
+            }
+            out.push(String::new());
+            continue;
+        }
+        out.push(cleaned.trim().to_owned());
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
 }
 
 fn strip_markdown_links(line: &str) -> String {
@@ -1875,27 +1966,6 @@ fn utf8_len(byte: u8) -> usize {
         0xC0..=0xDF => 2,
         0xE0..=0xEF => 3,
         _ => 4,
-    }
-}
-
-fn render_markdown_line(ui: &mut egui::Ui, line: &str) {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        ui.add_space(4.0);
-        return;
-    }
-    let hashes = trimmed.chars().take_while(|c| *c == '#').count();
-    let body = strip_markdown_links(trimmed.trim_start_matches('#').trim());
-    if hashes > 0 && !body.is_empty() {
-        let size = match hashes {
-            1 => 20.0,
-            2 => 17.0,
-            3 => 15.0,
-            _ => 14.0,
-        };
-        ui.label(egui::RichText::new(body).strong().size(size));
-    } else {
-        ui.label(body);
     }
 }
 
@@ -2221,6 +2291,17 @@ mod tests {
                 .drop_without_applying_deltas();
         }
 
+        // The save-scan button is gated on this appid, so it renders nowhere else.
+        app.store.games.push(crate::model::Game {
+            appid: sotf::APPID,
+            name: "Sons Of The Forest".to_owned(),
+            ..Default::default()
+        });
+        app.selected = Some(sotf::APPID);
+        app.game_tab = GameTab::Achievements;
+        ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui))
+            .drop_without_applying_deltas();
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2242,35 +2323,82 @@ mod tests {
     }
 
     #[test]
-    fn crucial_guide_tab_renders_imported_text() {
+    fn crucial_guide_slice_keeps_the_whole_long_list() {
         let _guard = crate::test_env_lock();
         let dir = std::env::temp_dir().join(format!("ah-guide-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("guides/psnprofiles")).unwrap();
         unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
 
+        // Far longer than the 12-line cap this used to have, one item per line.
+        // Escaped: a raw newline inside a JSON string would not parse.
+        let items: String = (0..20).map(|i| format!("\\nitem {i}")).collect();
         std::fs::write(
             dir.join("guides/psnprofiles/620.json"),
-            r###"{"title":"T","markdown":"## Stage 1\n![x](https://y/z.png) [Trophy](https://y#t)\n"}"###,
+            format!(
+                r#"{{"title":"T","markdown":"FOODIE 0.00%Common\nEat every kind of edible{items}\n"}}"#
+            ),
         )
         .unwrap();
 
-        let ctx = egui::Context::default();
-        let mut app = App::headless(ctx.clone());
-        app.store.games = vec![sample_game()];
-        app.tab = Tab::Games;
-        app.selected = Some(620);
-        app.game_tab = GameTab::Guide;
+        let mut game = crate::model::Game {
+            appid: 620,
+            name: "Game".to_owned(),
+            ..Default::default()
+        };
+        game.achievements = vec![Achievement {
+            name: "FOODIE".to_owned(),
+            ..Default::default()
+        }];
 
-        let out = ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui));
-        out.drop_without_applying_deltas();
-        let (id, title, markdown) = app.psn_guide.clone().expect("guide loaded");
-        assert_eq!(id, 620);
-        assert_eq!(title, "T");
-        assert!(markdown.contains("Stage 1"));
+        let ctx = egui::Context::default();
+        let mut app = App::headless(ctx);
+        app.store.games = vec![game];
+        app.attach_guide_slices(620);
+        let guide = app.store.game(620).unwrap().achievements[0].guide.clone();
+
+        assert!(guide.contains("item 19"), "guide was truncated: {guide:?}");
+        assert!(
+            guide.lines().any(|l| l.trim() == "item 0"),
+            "line structure was flattened: {guide:?}"
+        );
 
         unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crucial_checklist_detects_item_lists_not_prose() {
+        let list = "Eat every kind of edible in the game\nThis achievement includes:\n\n\
+                    bacon bite\nbrain bite\nsteak bite\nMRE pack\ncanned food";
+        let items = checklist_lines(list);
+        assert!(items.contains("bacon bite"), "{items:?}");
+        assert!(items.contains("canned food"), "{items:?}");
+        // the intro sentence ends in a full stop, so it is prose, not an item
+        assert!(!items.contains("This achievement includes:"), "{items:?}");
+
+        let prose = "Same as the Tradesman achievement.\nJust build with logs until 100 have been used.";
+        assert!(checklist_lines(prose).is_empty(), "{prose:?}");
+    }
+
+    #[test]
+    fn crucial_save_scan_writes_the_key_the_checkbox_reads() {
+        let found: std::collections::BTreeSet<String> =
+            ["crunchie wunchie", "severed arm"].iter().map(|s| s.to_string()).collect();
+        let guide = "FOODIE 0.00%Common\ncrunchie wunchies\nhuman arm\nturtle eggs";
+        let keys: HashSet<String> = save_tick_lines(guide, &found).into_iter().collect();
+
+        // written by the scan, read by achievement_list -- same string or the box stays empty
+        assert!(keys.contains("crunchie wunchies"), "{keys:?}");
+        assert!(keys.contains("human arm"), "{keys:?}");
+        assert!(!keys.contains("turtle eggs"), "{keys:?}");
+        for line in checklist_lines(guide) {
+            assert_eq!(
+                keys.contains(&normalize_match(line)),
+                sotf::line_done(line, &found),
+                "read/write disagree on {line:?}"
+            );
+        }
     }
 
     #[test]

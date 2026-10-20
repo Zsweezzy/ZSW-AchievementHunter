@@ -2,15 +2,19 @@ use crate::model::{FlowGraph, Game};
 use crate::paths;
 use crate::settings::Settings;
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
+
+/// appid -> achievement api_name -> checked guide lines (normalized text).
+pub type Checks = HashMap<u32, HashMap<String, HashSet<String>>>;
 
 pub struct Store {
     pub settings: Settings,
     pub games: Vec<Game>,
     pub flow: HashMap<u32, FlowGraph>,
     pub sort: HashMap<u32, Vec<String>>,
+    pub checks: Checks,
 }
 
 impl Store {
@@ -22,6 +26,7 @@ impl Store {
             games: read_json(&paths::library_path()).unwrap_or_default(),
             flow: read_json(&paths::flow_path()).unwrap_or_default(),
             sort: read_json(&paths::sort_path()).unwrap_or_default(),
+            checks: read_json(&paths::checks_path()).unwrap_or_default(),
         }
     }
 
@@ -61,11 +66,21 @@ impl Store {
         )
     }
 
+    pub fn save_checks(&self) -> io::Result<()> {
+        write_atomic(
+            &paths::checks_path(),
+            &self.checks,
+            self.settings.backups_kept,
+            |v| serde_json::to_string_pretty(v).map_err(io::Error::other),
+        )
+    }
+
     pub fn save_all(&self) -> io::Result<()> {
         self.save_settings()?;
         self.save_library()?;
         self.save_flow()?;
         self.save_sort()?;
+        self.save_checks()?;
         Ok(())
     }
 
@@ -178,6 +193,10 @@ mod tests {
             },
         );
         store.settings.steam_id = "42".to_owned();
+        store.checks.insert(
+            620,
+            HashMap::from([("foodie".to_owned(), HashSet::from(["bacon bite".to_owned()]))]),
+        );
         store.save_all().unwrap();
 
         let reloaded = Store::load();
@@ -185,6 +204,7 @@ mod tests {
         assert_eq!(reloaded.settings.steam_id, "42");
         assert_eq!(reloaded.sort[&620], vec!["a".to_owned()]);
         assert_eq!(reloaded.flow[&620].nodes[0].x, 1.0);
+        assert!(reloaded.checks[&620]["foodie"].contains("bacon bite"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -82,23 +82,16 @@ pub enum GameTab {
     Achievements,
     Flow,
     Sort,
-    Guide,
 }
 
 impl GameTab {
-    pub const ALL: [GameTab; 4] = [
-        GameTab::Achievements,
-        GameTab::Flow,
-        GameTab::Sort,
-        GameTab::Guide,
-    ];
+    pub const ALL: [GameTab; 3] = [GameTab::Achievements, GameTab::Flow, GameTab::Sort];
 
     pub fn label(self) -> &'static str {
         match self {
             GameTab::Achievements => "Achievements",
             GameTab::Flow => "Flowgraph",
             GameTab::Sort => "Custom Sort",
-            GameTab::Guide => "Guide",
         }
     }
 }

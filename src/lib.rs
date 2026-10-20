@@ -5,6 +5,7 @@ pub mod model;
 pub mod paths;
 pub mod providers;
 pub mod settings;
+pub mod sotf;
 pub mod steam;
 pub mod store;
 pub mod vdf;
