@@ -103,6 +103,228 @@ pub fn import_psnprofiles(
     Ok((written, skipped))
 }
 
+/// Turn a copied guide page (HTML source or the browser's plain-text copy)
+/// into compact, markdown-ish text: tags, scripts, styles and entities gone,
+/// whitespace collapsed. A 1 MB page usually shrinks to a few dozen KB.
+pub fn page_to_guide(raw: &str) -> String {
+    let text = if looks_like_html(raw) {
+        html_to_text(raw)
+    } else {
+        decode_entities(raw)
+    };
+    normalize_text(&text)
+}
+
+/// Convert `raw` and write it to the per-game file the app already reads
+/// (`<data>/guides/psnprofiles/<appid>.json`). Returns (input bytes, file bytes).
+pub fn save_guide_page(appid: u32, title: &str, raw: &str) -> Result<(usize, usize), String> {
+    let markdown = page_to_guide(raw);
+    if markdown.trim().is_empty() {
+        return Err("no guide text found in the page".to_owned());
+    }
+    let entry = serde_json::json!({
+        "source": "psnprofiles",
+        "title": title,
+        "url": "",
+        "markdown": markdown,
+    });
+    let text = entry.to_string();
+    let dir = crate::paths::psnprofiles_guides_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(format!("{appid}.json")), &text).map_err(|e| e.to_string())?;
+    Ok((raw.len(), text.len()))
+}
+
+fn looks_like_html(raw: &str) -> bool {
+    let head: String = raw.chars().take(4096).collect();
+    let head = head.to_ascii_lowercase();
+    head.contains("</") || head.contains("<!doctype") || head.contains("<br")
+}
+
+fn html_to_text(raw: &str) -> String {
+    let cleaned = strip_element(raw, "title");
+    let cleaned = strip_element(&cleaned, "script");
+    let cleaned = strip_element(&cleaned, "style");
+    let cleaned = strip_element(&cleaned, "noscript");
+    let cleaned = strip_element(&cleaned, "nav");
+    let cleaned = strip_element(&cleaned, "footer");
+    let cleaned = strip_comments(&cleaned);
+    let mut out = String::with_capacity(cleaned.len());
+    let mut rest = cleaned.as_str();
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&rest[..lt]);
+        let after = &rest[lt..];
+        let Some(gt) = after.find('>') else {
+            out.push_str(after);
+            return out;
+        };
+        let name = after[1..gt]
+            .trim_start_matches('/')
+            .split(|c: char| c.is_whitespace() || c == '/')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match name.as_str() {
+            "br" | "p" | "div" | "li" | "tr" | "ul" | "ol" | "section" | "article"
+            | "blockquote" | "pre" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => out.push('\n'),
+            "td" | "th" => out.push('\t'),
+            _ => {}
+        }
+        rest = &after[gt + 1..];
+    }
+    out.push_str(rest);
+    decode_entities(&out)
+}
+
+/// Drop `<element …>…</element>` blocks (case-insensitive).
+fn strip_element(input: &str, element: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let open = format!("<{element}");
+    let close = format!("</{element}");
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while let Some(start) = lower[i..].find(&open) {
+        let start = i + start;
+        out.push_str(&input[i..start]);
+        let Some(close_at) = lower[start..].find(&close) else {
+            return out;
+        };
+        let close_at = start + close_at;
+        let Some(end) = lower[close_at..].find('>') else {
+            return out;
+        };
+        i = close_at + end + 1;
+    }
+    out.push_str(&input[i..]);
+    out
+}
+
+fn strip_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        let Some(end) = rest[start + 4..].find("-->") else {
+            return out;
+        };
+        rest = &rest[start + 4 + end + 3..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn decode_entities(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        let decoded = tail.find(';').and_then(|semi| {
+            if semi > 10 {
+                return None;
+            }
+            let entity = &tail[1..semi];
+            let decoded = match entity {
+                "amp" => '&',
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                "nbsp" => ' ',
+                "mdash" => '—',
+                "ndash" => '–',
+                "hellip" => '…',
+                "bull" => '•',
+                "middot" => '·',
+                "copy" => '©',
+                "reg" => '®',
+                "trade" => '™',
+                "euro" => '€',
+                "pound" => '£',
+                "yen" => '¥',
+                "cent" => '¢',
+                "sect" => '§',
+                "para" => '¶',
+                "deg" => '°',
+                "times" => '×',
+                "divide" => '÷',
+                "laquo" => '«',
+                "raquo" => '»',
+                "rsquo" => '’',
+                "lsquo" => '‘',
+                "ldquo" => '“',
+                "rdquo" => '”',
+                _ => {
+                    let number = entity.strip_prefix('#')?;
+                    let code = match number.strip_prefix(|c: char| c == 'x' || c == 'X') {
+                        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                        None => number.parse::<u32>().ok()?,
+                    };
+                    char::from_u32(code)?
+                }
+            };
+            Some((decoded, semi))
+        });
+        match decoded {
+            Some((ch, semi)) => {
+                out.push(ch);
+                rest = &tail[semi + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn normalize_text(input: &str) -> String {
+    let lines: Vec<String> = input
+        .replace('\r', "\n")
+        .lines()
+        .map(|line| {
+            let mut buf = String::new();
+            let mut space = false;
+            for ch in line.chars() {
+                if ch == ' ' || ch == '\t' || ch == '\u{a0}' {
+                    space = true;
+                } else {
+                    if space && !buf.is_empty() {
+                        buf.push(' ');
+                    }
+                    space = false;
+                    if !ch.is_control() {
+                        buf.push(ch);
+                    }
+                }
+            }
+            buf
+        })
+        .collect();
+    let start = lines.iter().position(|line| !line.is_empty());
+    let end = lines.iter().rposition(|line| !line.is_empty());
+    let (Some(start), Some(end)) = (start, end) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    let mut blanks = 0;
+    for line in &lines[start..=end] {
+        if line.is_empty() {
+            blanks += 1;
+            if blanks > 1 {
+                continue;
+            }
+        } else {
+            blanks = 0;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim_end().to_owned()
+}
+
 pub fn hltb_search_url(name: &str) -> String {
     format!(
         "https://howlongtobeat.com/?q={}",
@@ -633,5 +855,65 @@ mod tests {
                 .any(|(source, url)| *source == "Steam Community" && url.contains("/app/620/"))
         );
         assert!(links.iter().any(|(_, url)| url.contains("%C5%8Ckami")));
+    }
+
+    #[test]
+    fn crucial_page_to_guide_strips_html_markup() {
+        let html = r#"<!doctype html><html><head>
+            <style>.trophy { color: red }</style>
+            <script>alert("tracking")</script>
+            </head><body>
+            <h1>Roadmap</h1><p>First&nbsp;line &amp; more.</p>
+            <!-- hidden -->
+            <div><br>Second &#39;quoted&#39; line</div>
+            </body></html>"#;
+        let guide = page_to_guide(html);
+        assert!(guide.contains("Roadmap"));
+        assert!(guide.contains("First line & more."));
+        assert!(guide.contains("Second 'quoted' line"));
+        assert!(!guide.contains('<'));
+        assert!(!guide.contains("alert"));
+        assert!(!guide.contains("color: red"));
+        assert!(!guide.contains("hidden"));
+    }
+
+    #[test]
+    fn crucial_page_to_guide_keeps_plain_text() {
+        let text = "   Platinum Trophy\r\n\r\n\r\n  Finish the game.  \r\n";
+        assert_eq!(page_to_guide(text), "Platinum Trophy\n\nFinish the game.");
+    }
+
+    #[test]
+    fn crucial_page_to_guide_decodes_entities() {
+        assert_eq!(
+            page_to_guide("A &#8212; B &#x2014; C &mdash; D"),
+            "A — B — C — D"
+        );
+        assert_eq!(
+            page_to_guide("&lt;tag&gt; &amp; &quot;quote&quot;"),
+            "<tag> & \"quote\""
+        );
+    }
+
+    #[test]
+    fn crucial_saved_guide_page_is_read_back() {
+        let _guard = crate::test_env_lock();
+        let dir = std::env::temp_dir().join(format!("ah-guide-page-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
+
+        save_guide_page(
+            4242,
+            "Test Game",
+            "<h2>Trophy</h2><p>Do&nbsp;the thing.</p>",
+        )
+        .unwrap();
+        let (title, markdown) = local_psnprofiles_guide(4242).expect("guide not readable");
+        assert_eq!(title, "Test Game");
+        assert_eq!(markdown, "Trophy\n\nDo the thing.");
+
+        unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

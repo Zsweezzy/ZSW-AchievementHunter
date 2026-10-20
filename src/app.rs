@@ -767,6 +767,10 @@ impl App {
         let Some((_, title, markdown)) = &self.psn_guide else {
             ui.label("No PSNProfiles guide text imported for this game.");
             ui.weak("Run the collector in your browser, then import the JSON into the guides/psnprofiles folder.");
+            ui.weak(
+                "Or copy the guide page into a file and run \
+                 achievement-hunter --import-guide \"<game>\" <page.html>",
+            );
             if let Some(path) = providers::psnprofiles_import_path() {
                 if ui
                     .button(format!("Import guide text from {}", path.display()))
@@ -2543,6 +2547,43 @@ Defeat all five bosses in Inkwell Isle 1.\n";
             !slices[0].contains("Taking Names"),
             "header was not stripped"
         );
+    }
+
+    #[test]
+    fn crucial_pasted_page_slices_into_achievements() {
+        let html = r#"<!doctype html><html><head><title>Guide</title>
+            <script>junk()</script></head><body>
+            <nav>PSNProfiles Games</nav>
+            <h2>Pacifist</h2>
+            <p><strong>Complete the Chamber 4-9 without knocking over any turrets</strong></p>
+            <p>Step past the turrets slowly.</p>
+            <h2>Sending a message</h2>
+            <p><strong>Blow up a test chamber sign</strong></p>
+            <p>Throw a cube at the sign.</p>
+            </body></html>"#;
+        let achievements = vec![
+            Achievement {
+                name: "Pacifist".to_owned(),
+                description: "Complete the Chamber 4-9 without knocking over any turrets"
+                    .to_owned(),
+                ..Default::default()
+            },
+            Achievement {
+                name: "Sending a message".to_owned(),
+                description: "Blow up a test chamber sign".to_owned(),
+                ..Default::default()
+            },
+        ];
+        let markdown = crate::providers::page_to_guide(html);
+        let slices = guide_slices(&markdown, &achievements);
+        assert!(
+            slices[0].contains("Step past the turrets"),
+            "{:?}",
+            slices[0]
+        );
+        assert!(slices[1].contains("Throw a cube"), "{:?}", slices[1]);
+        assert!(!slices[0].contains("Throw a cube"), "slices bled together");
+        assert!(!slices[0].contains("PSNProfiles"), "page chrome leaked in");
     }
 
     #[test]

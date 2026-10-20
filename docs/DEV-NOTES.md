@@ -94,6 +94,16 @@ draw a flowgraph of them.
   lives only in the data dir and is never committed to the repo. `markdown` is
   rendered line-based (headings from leading `#`, image markdown dropped, link
   markdown reduced to its text) with no markdown-renderer dependency.
+- **Single-page import.** Instead of the collector, one guide page can be copied
+  and converted directly:
+  `achievement-hunter --import-guide "<game name|appid>" <page.html>`.
+  `providers::page_to_guide` strips tags, scripts, styles, nav/footer, comments
+  and decodes entities, then collapses whitespace; a typical page drops to a few
+  percent of its size. The result is written to the same
+  `<data>/guides/psnprofiles/<appid>.json`, so the app slices it into each
+  achievement exactly like a collector import. The command resolves the game by
+  exact or unique partial name (or `appid`) against the loaded library. Run it
+  with the app closed or restart afterwards, since guides are attached at startup.
 
 ## UI behaviour
 
