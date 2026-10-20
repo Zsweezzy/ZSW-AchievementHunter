@@ -1908,6 +1908,11 @@ fn clean_guide(lines: &[&str]) -> String {
             out.push(String::new());
             continue;
         }
+        // Decorative rules ("-----") have no break points, so egui clips them at the
+        // panel edge instead of wrapping. Drop them; blank-line spacing reads the same.
+        if cleaned.trim().chars().all(|c| "-=_*~ ".contains(c)) {
+            continue;
+        }
         out.push(cleaned.trim().to_owned());
     }
     while out.last().is_some_and(|l| l.is_empty()) {
@@ -2399,6 +2404,21 @@ mod tests {
                 "read/write disagree on {line:?}"
             );
         }
+    }
+
+    #[test]
+    fn crucial_clean_guide_drops_decorative_rules() {
+        let lines = [
+            "Survive day 50",
+            "------------------------------------------------------",
+            "Thank you for the support",
+            "---",
+            "and good luck",
+        ];
+        let guide = clean_guide(&lines);
+        assert!(!guide.contains("---"), "rule kept, would clip: {guide:?}");
+        assert!(guide.contains("Survive day 50"));
+        assert!(guide.contains("and good luck"));
     }
 
     #[test]
