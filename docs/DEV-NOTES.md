@@ -182,6 +182,34 @@ draw a flowgraph of them.
   "Dropped TexturesDelta with 1 unapplied deltas".
 - Tests that mutate process env must hold `crate::test_env_lock()`.
 
+## Release build
+
+`Cargo.toml`'s `[profile.release]` is tuned for size: `opt-level = "s"`,
+fat `lto`, `codegen-units = 1`, `panic = "abort"`, `strip = true`, and only
+the renderer/codecs the app uses (`eframe` with `glow`, no `wgpu`; `image`
+with png/jpeg only). Plain `cargo build --release` produces the small binary.
+
+On a non-NixOS host whose `cc` comes from Nix, the linker picks the Nix glibc
+as the ELF interpreter; its loader does not search `/usr/lib`, so
+`dlopen("libwayland-client.so.0")` fails at startup (`NoWaylandLib`). Build
+with the system linker instead:
+
+```sh
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=/usr/bin/gcc cargo build --release
+```
+
+For the smallest artifact, pack the stripped binary with UPX (a packaging
+step, not part of `cargo`):
+
+```sh
+nix run nixpkgs#upx -- --best --lzma target/release/achievement-hunter \
+  -o target/release/achievement-hunter.upx
+```
+
+Reference sizes: 36 MB (old profile) -> 12.4 MB (size profile) -> 4.2 MB
+(UPX). UPX costs a few ms of startup decompression and is flagged by some
+antivirus/heuristic scanners; skip it if that matters.
+
 ## Known limits
 
 - Guide data depends on a third-party JSON API; when its shape changes, only
