@@ -2436,6 +2436,70 @@ mod tests {
     }
 
     #[test]
+    fn crucial_file_uri_image_loader_is_installed() {
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        assert!(
+            ctx.is_loader_installed(egui_extras::loaders::file_loader::FileLoader::ID),
+            "egui_extras `file` feature is required, or file:// art never loads"
+        );
+        assert!(
+            ctx.is_loader_installed(egui_extras::loaders::image_loader::ImageCrateLoader::ID),
+            "egui_extras `image` feature is required, or images never decode"
+        );
+    }
+
+    #[test]
+    fn crucial_file_uri_image_loads_end_to_end() {
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let dir = std::env::temp_dir();
+
+        let png = dir.join(format!("ah-loader-{}.png", std::process::id()));
+        let mut png_bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([255, 0, 0, 255]),
+        ))
+        .write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        std::fs::write(&png, &png_bytes).unwrap();
+
+        let jpg = dir.join(format!("ah-loader-{}.jpg", std::process::id()));
+        let mut jpg_bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(3, 3, image::Rgb([0, 255, 0])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpg_bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        std::fs::write(&jpg, &jpg_bytes).unwrap();
+
+        let loaded = |path: &std::path::Path| {
+            let uri = format!("file://{}", path.display());
+            for _ in 0..400 {
+                if let Ok(egui::load::ImagePoll::Ready { image }) =
+                    ctx.try_load_image(&uri, egui::load::SizeHint::default())
+                {
+                    return Some(image.size);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            None
+        };
+        let png_size = loaded(&png);
+        let jpg_size = loaded(&jpg);
+        let _ = std::fs::remove_file(&png);
+        let _ = std::fs::remove_file(&jpg);
+        assert_eq!(png_size, Some([2, 2]), "file:// PNG never decoded");
+        assert_eq!(jpg_size, Some([3, 3]), "file:// JPEG never decoded");
+    }
+
+    #[test]
     fn crucial_guide_slices_match_each_achievement_block() {
         let markdown = "\
 Summary Taking Names A Walk in the Park\n\

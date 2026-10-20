@@ -210,6 +210,10 @@ Reference sizes: 36 MB (old profile) -> 12.4 MB (size profile) -> 4.2 MB
 (UPX). UPX costs a few ms of startup decompression and is flagged by some
 antivirus/heuristic scanners; skip it if that matters.
 
+`[profile.dev] debug = false` keeps `target/debug` from ballooning (debug
+info dominated the old 13 GB `target/`). `cargo clean` reclaims all build
+artifacts at any time; the installed binary lives in `~/.local/bin`.
+
 ## Known limits
 
 - Guide data depends on a third-party JSON API; when its shape changes, only

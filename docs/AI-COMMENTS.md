@@ -213,6 +213,9 @@ ACHIEVEMENT_HUNTER_DATA=/tmp/opencode/ah-run DISPLAY=:0 timeout 6 ./target/debug
 - New cached image: add the destination to `paths.rs`, then check
   `path.exists()` before building the `egui::Image`, and trigger the download
   from a `spawn_*` method guarded by the `*_requested` set so it fires once.
+  Images are shown with `egui::Image::new("file://…")`, so `egui_extras` must
+  keep **both** the `image` (decoder) and `file` (the `file://` bytes loader)
+  features; `crucial_file_uri_image_*` fails to compile/load without them.
 - New per-achievement fact: parse it in `steam.rs` (`SchemaEntry` +
   `apply_schema`), add the field to `model::Achievement` with the container
   `#[serde(default)]`, and render it in `achievement_list`. Extend the
