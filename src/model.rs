@@ -124,6 +124,58 @@ pub fn sort_games(games: &mut [Game], mode: SortMode) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AchievementSort {
+    #[default]
+    Stored,
+    Name,
+    Rarity,
+    UnlockedFirst,
+}
+
+impl AchievementSort {
+    pub const ALL: [AchievementSort; 4] = [
+        AchievementSort::Stored,
+        AchievementSort::Name,
+        AchievementSort::Rarity,
+        AchievementSort::UnlockedFirst,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AchievementSort::Stored => "Default order",
+            AchievementSort::Name => "Name",
+            AchievementSort::Rarity => "Rarest first",
+            AchievementSort::UnlockedFirst => "Unlocked first",
+        }
+    }
+}
+
+pub fn achievement_order(achievements: &[Achievement], sort: AchievementSort) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..achievements.len()).collect();
+    match sort {
+        AchievementSort::Stored => {}
+        AchievementSort::Name => {
+            indices.sort_by_cached_key(|&index| achievements[index].name.to_lowercase())
+        }
+        AchievementSort::Rarity => indices.sort_by(|&a, &b| {
+            match (
+                achievements[a].global_percent,
+                achievements[b].global_percent,
+            ) {
+                (Some(left), Some(right)) => left.total_cmp(&right),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        }),
+        AchievementSort::UnlockedFirst => {
+            indices.sort_by_key(|&index| !achievements[index].unlocked)
+        }
+    }
+    indices
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct Filters {
     pub installed_only: bool,
@@ -391,6 +443,35 @@ mod tests {
         assert_eq!(games[0].name, "Alpha");
         assert_eq!(games[1].name, "mid");
         assert_eq!(games[2].name, "zeta");
+    }
+
+    #[test]
+    fn crucial_achievement_order_sorts_without_touching_storage() {
+        let mut achievements = vec![ach("Zeta", false), ach("alpha", true), ach("Mid", false)];
+        achievements[0].global_percent = Some(12.0);
+        achievements[1].global_percent = Some(1.5);
+        achievements[2].global_percent = None;
+        let names = |sort| -> Vec<&str> {
+            achievement_order(&achievements, sort)
+                .into_iter()
+                .map(|index| achievements[index].name.as_str())
+                .collect()
+        };
+        assert_eq!(names(AchievementSort::Stored), vec!["Zeta", "alpha", "Mid"]);
+        assert_eq!(names(AchievementSort::Name), vec!["alpha", "Mid", "Zeta"]);
+        assert_eq!(names(AchievementSort::Rarity), vec!["alpha", "Zeta", "Mid"]);
+        assert_eq!(
+            names(AchievementSort::UnlockedFirst),
+            vec!["alpha", "Zeta", "Mid"]
+        );
+        assert_eq!(
+            achievements
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Zeta", "alpha", "Mid"],
+            "sorting is a view, not a reorder"
+        );
     }
 
     #[test]

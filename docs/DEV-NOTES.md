@@ -52,9 +52,25 @@ draw a flowgraph of them.
   the cache is kept verbatim; a fresh record that *does* carry achievements
   replaces the cache, and existing notes are re-applied by `api_name`. Removing
   this rule makes every Refresh wipe every achievement and note.
+- **Sorting is a view, not a reorder.** The Achievements tab's sort
+  (`model::AchievementSort`) only chooses the order rows are drawn in;
+  `Game::achievements` keeps its stored order, so the Custom Sort tab and
+  `sort.json` are untouched. Sorting in the tab must never write the library.
+- **Auto-refresh is a timer, not a spinner.** `App::auto_refresh` runs at most
+  once per `Settings::auto_refresh_minutes` (0 = off), skips the tick while
+  `busy`, and is scheduled with `ctx.request_repaint_after` so an idle window
+  still wakes up. It reloads the library and, once the `Msg::Games` result
+  lands, the selected game's achievements (`App::reload_after_refresh`), then
+  scans the Sons Of The Forest save. A tick must not start a second background
+  request while one is in flight.
 - **Comments stay out of `.rs`.** Enforced by convention and by review.
 
 ## Guide sources
+
+Sources are registered in `providers::GUIDE_SOURCES` (id, label, settings
+toggle, fetch function). `fetch_guides` runs every enabled entry and the
+Settings tab draws one checkbox per entry, so a new source is one function plus
+one entry — see `CONTRIBUTING.md`.
 
 - **SteamHunters JSON API (default, keyless).**
   `GET https://steamhunters.com/api/apps/{appid}` → achievement count, median

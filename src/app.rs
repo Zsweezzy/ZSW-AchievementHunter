@@ -1,5 +1,6 @@
 use crate::model::{
-    self, Achievement, FlowGraph, FlowNode, Game, GameTab, GuideInfo, SortMode, Tab,
+    self, Achievement, AchievementSort, FlowGraph, FlowNode, Game, GameTab, GuideInfo, SortMode,
+    Tab,
 };
 use crate::providers;
 use crate::sotf;
@@ -44,6 +45,10 @@ pub struct App {
     note_edit: Option<String>,
     prefetch: VecDeque<u32>,
     prefetch_busy: bool,
+    /// Wall clock of the last periodic refresh; the timer restarts with the app.
+    last_auto_refresh: Instant,
+    /// Selected game whose achievements reload once the periodic library pull lands.
+    reload_after_refresh: Option<u32>,
     /// api_names whose long guide the user expanded this session.
     expanded: HashSet<String>,
 }
@@ -104,6 +109,8 @@ impl App {
             note_edit: None,
             prefetch: VecDeque::new(),
             prefetch_busy: false,
+            last_auto_refresh: Instant::now(),
+            reload_after_refresh: None,
             expanded: HashSet::new(),
         };
         app.status = app.ready_status();
@@ -134,6 +141,11 @@ impl App {
                     self.busy = false;
                     self.status = status;
                     self.spawn_art();
+                    if let Some(appid) = self.reload_after_refresh.take()
+                        && self.store.game(appid).is_some()
+                    {
+                        self.load_achievements(appid);
+                    }
                 }
                 Msg::Achievements(appid, achievements, status) => {
                     let count = achievements.len();
@@ -179,6 +191,30 @@ impl App {
                 }
             }
         }
+    }
+
+    fn auto_refresh(&mut self, ctx: &egui::Context) {
+        let minutes = self.store.settings.auto_refresh_minutes;
+        let Some(delay) = refresh_delay(self.last_auto_refresh.elapsed(), minutes) else {
+            return;
+        };
+        if !delay.is_zero() {
+            ctx.request_repaint_after(delay);
+            return;
+        }
+        if self.busy {
+            ctx.request_repaint_after(std::time::Duration::from_secs(30));
+            return;
+        }
+        self.last_auto_refresh = Instant::now();
+        ctx.request_repaint_after(std::time::Duration::from_secs(minutes * 60));
+        if self.selected.is_some() && self.store.settings.has_steam_credentials() {
+            self.reload_after_refresh = self.selected;
+        }
+        if self.store.game(sotf::APPID).is_some() {
+            self.scan_sotf(sotf::APPID);
+        }
+        self.refresh();
     }
 
     fn refresh(&mut self) {
@@ -847,7 +883,9 @@ impl App {
                 }
             }
         }
-        self.dirty.checks = true;
+        if ticked > 0 {
+            self.dirty.checks = true;
+        }
         self.status = format!("Save scan: ticked {ticked} checklist items.");
     }
 
@@ -865,6 +903,21 @@ impl App {
         if appid == sotf::APPID && ui.button("Scan Sons Of The Forest save").clicked() {
             self.scan_sotf(appid);
         }
+        let mut sort_changed = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Sort:");
+            for mode in AchievementSort::ALL {
+                let active = self.store.settings.achievement_sort == mode;
+                if ui.selectable_label(active, mode.label()).clicked() && !active {
+                    self.store.settings.achievement_sort = mode;
+                    sort_changed = true;
+                }
+            }
+        });
+        if sort_changed {
+            self.dirty.settings = true;
+        }
+        let sort = self.store.settings.achievement_sort;
         let (show_locked, show_unlocked) = (
             self.store.settings.filter_locked,
             self.store.settings.filter_unlocked,
@@ -881,13 +934,15 @@ impl App {
             ui.label("No achievement data cached yet. Press Load achievements.");
             return;
         }
+        let order = model::achievement_order(&game.achievements, sort);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 // Without this a long unbreakable run (a guide's "-----" rule) widens the
                 // scroll content, and the row separators draw past the viewport edge.
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                for achievement in &mut game.achievements {
+                for index in order {
+                    let achievement = &mut game.achievements[index];
                     if !model::passes_filter(achievement, show_locked, show_unlocked) {
                         continue;
                     }
@@ -1401,8 +1456,16 @@ impl App {
                     "Use SteamGridDB for grid artwork",
                 );
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut settings.guide_hltb, "Guides: HowLongToBeat");
-                    ui.checkbox(&mut settings.guide_steamhunters, "Guides: SteamHunters");
+                    for source in providers::GUIDE_SOURCES {
+                        let mut on = *((source.toggle)(&mut settings));
+                        if ui
+                            .checkbox(&mut on, format!("Guides: {}", source.label))
+                            .changed()
+                        {
+                            *((source.toggle)(&mut settings)) = on;
+                            structural = true;
+                        }
+                    }
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Library sort:");
@@ -1415,6 +1478,20 @@ impl App {
                             self.dirty.library = true;
                         }
                     }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Auto-refresh").on_hover_text(
+                        "Minutes between automatic library, achievement (selected game) and \
+                         save refreshes. 0 turns it off.",
+                    );
+                    structural |= ui
+                        .add(
+                            egui::DragValue::new(&mut settings.auto_refresh_minutes)
+                                .range(0..=1440)
+                                .suffix(" min"),
+                        )
+                        .changed();
+                    ui.weak("0 = off");
                 });
                 ui.separator();
 
@@ -1544,6 +1621,7 @@ impl eframe::App for App {
 impl App {
     fn draw(&mut self, ui: &mut egui::Ui) {
         self.pump();
+        self.auto_refresh(ui.ctx());
         if let Some(appid) = self.selected
             && self.store.game(appid).is_none()
         {
@@ -1600,9 +1678,20 @@ impl App {
             note_edit: None,
             prefetch: VecDeque::new(),
             prefetch_busy: false,
+            last_auto_refresh: Instant::now(),
+            reload_after_refresh: None,
             expanded: HashSet::new(),
         }
     }
+}
+
+/// Time until the next periodic refresh, or `None` when auto-refresh is off.
+/// A zero duration means the refresh is due now.
+fn refresh_delay(elapsed: std::time::Duration, minutes: u64) -> Option<std::time::Duration> {
+    if minutes == 0 {
+        return None;
+    }
+    Some(std::time::Duration::from_secs(minutes * 60).saturating_sub(elapsed))
 }
 
 struct TabStyle {
@@ -2365,6 +2454,24 @@ mod tests {
     }
 
     #[test]
+    fn crucial_refresh_delay_counts_down_and_respects_off() {
+        use std::time::Duration;
+        assert_eq!(refresh_delay(Duration::from_secs(1), 0), None);
+        assert_eq!(
+            refresh_delay(Duration::from_secs(60), 15),
+            Some(Duration::from_secs(14 * 60))
+        );
+        assert_eq!(
+            refresh_delay(Duration::from_secs(15 * 60), 15),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            refresh_delay(Duration::from_secs(9_999), 15),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
     fn crucial_strip_markdown_links_removes_images_and_keeps_link_text() {
         assert_eq!(
             strip_markdown_links("![Gold](https://x/gold.png) [Souls Saved](https://y#a)"),
@@ -2627,6 +2734,102 @@ mod tests {
             "expanded guide should offer Hide guide"
         );
         out.drop_without_applying_deltas();
+
+        unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crucial_achievement_sort_control_reorders_the_visible_rows() {
+        let _guard = crate::test_env_lock();
+        let dir = std::env::temp_dir().join(format!("ah-sort-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
+
+        let mut game = crate::model::Game {
+            appid: 1,
+            name: "G".to_owned(),
+            ..Default::default()
+        };
+        game.achievements = ["Zeta", "alpha", "Mid"]
+            .into_iter()
+            .map(|name| Achievement {
+                api_name: name.to_owned(),
+                name: name.to_owned(),
+                ..Default::default()
+            })
+            .collect();
+        let stored: Vec<String> = game.achievements.iter().map(|a| a.name.clone()).collect();
+
+        let ctx = egui::Context::default();
+        let mut app = App::headless(ctx.clone());
+        app.store.games = vec![game];
+        app.tab = Tab::Games;
+        app.selected = Some(1);
+        app.game_tab = GameTab::Achievements;
+
+        let raw = |events: Vec<egui::Event>| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1000.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let top_of = |out: &egui::FullOutput, name: &str| -> f32 {
+            text_runs(out)
+                .into_iter()
+                .find(|(_, text)| text == name)
+                .unwrap_or_else(|| panic!("{name} not drawn"))
+                .0
+                .min
+                .y
+        };
+
+        let out = ctx.run_ui(raw(Vec::new()), |ui| app.achievement_list(ui, 1));
+        assert!(
+            top_of(&out, "Zeta") < top_of(&out, "alpha"),
+            "stored order first"
+        );
+        let name_label = text_runs(&out)
+            .into_iter()
+            .find(|(_, text)| text == AchievementSort::Name.label())
+            .expect("the Sort row must offer a Name option")
+            .0;
+        out.drop_without_applying_deltas();
+
+        let press = |pressed: bool| {
+            raw(vec![
+                egui::Event::PointerMoved(name_label.center()),
+                egui::Event::PointerButton {
+                    pos: name_label.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ])
+        };
+        ctx.run_ui(press(true), |ui| app.achievement_list(ui, 1))
+            .drop_without_applying_deltas();
+        let out = ctx.run_ui(press(false), |ui| app.achievement_list(ui, 1));
+        assert_eq!(app.store.settings.achievement_sort, AchievementSort::Name);
+        assert!(app.dirty.settings, "the choice has to be saved");
+        assert!(
+            top_of(&out, "alpha") < top_of(&out, "Mid")
+                && top_of(&out, "Mid") < top_of(&out, "Zeta"),
+            "name sort applies to the rows"
+        );
+        out.drop_without_applying_deltas();
+        assert_eq!(
+            app.store.games[0]
+                .achievements
+                .iter()
+                .map(|a| a.name.clone())
+                .collect::<Vec<_>>(),
+            stored,
+            "sorting must not rewrite the stored order"
+        );
 
         unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
         let _ = std::fs::remove_dir_all(&dir);

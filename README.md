@@ -22,13 +22,18 @@ no webview, no bundled browser — one native executable.
   each achievement (dimmed when still locked), global unlock rates, a `hidden`
   badge for achievements Steam hides until they are earned, and per-achievement
   notes. Notes stay hidden until you right-click an achievement and pick
-  *Add / edit note*.
+  *Add / edit note*. Sort the list by default order, name, rarity, or unlocked
+  first without disturbing the custom order.
 - **Guides** — completion time, difficulty, and per-achievement data from the
   SteamHunters JSON API, plus a HowLongToBeat link. Toggle which sources are
   queried. A source that cannot be reached degrades to a link, never an error.
 - **Flowgraph** — draggable nodes, click-to-link edges, right-click to delete.
   Layout is saved per game.
 - **Sort** — drag-and-drop reordering of achievements, saved per game.
+- **Auto-refresh** — every 15 minutes by default (configurable in Settings,
+  `0` turns it off) the app reloads the library, the selected game's
+  achievements, and the Sons Of The Forest save, so progress updates without
+  pressing Refresh.
 - **Themes, fonts, and scale** — Tokyo Night by default, with every color
   editable in the settings tab. Load your own fonts by path, and set a global
   interface scale.
@@ -90,7 +95,7 @@ Stored under your platform data directory (override with
 
 | File | Contents |
 | --- | --- |
-| `settings.toml` | Theme, fonts, interface scale, credentials, filters, sort mode. |
+| `settings.toml` | Theme, fonts, interface scale, credentials, filters, sort modes, auto-refresh interval. |
 | `library.json` | Games, achievements, notes, guide cache. |
 | `flow.json` | Flowgraph nodes and edges. |
 | `sort.json` | Custom achievement ordering. |
@@ -108,8 +113,9 @@ folder, keeping the newest N.
 ## Development
 
 See [`docs/DEV-NOTES.md`](docs/DEV-NOTES.md) for architecture and invariants and
-[`docs/AI-COMMENTS.md`](docs/AI-COMMENTS.md) for the contributor rules (the
-`.rs` files are comment-free by design).
+[`docs/AI-COMMENTS.md`](docs/AI-COMMENTS.md) for the agent-facing rules.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the build/test commands and the recipe
+for adding a guide source or a setting.
 
 ```
 cargo fmt

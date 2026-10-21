@@ -402,20 +402,44 @@ pub fn extra_guide_links(name: &str, appid: u32) -> Vec<(&'static str, String)> 
     ]
 }
 
+/// One entry in [`GUIDE_SOURCES`]: adding a guide source means writing a
+/// `(GuideInfo, Option<String>)` fetch function, adding a `Settings` field, and
+/// adding one entry here. See CONTRIBUTING.md.
+pub struct GuideSource {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub enabled: fn(&Settings) -> bool,
+    pub toggle: fn(&mut Settings) -> &mut bool,
+    pub fetch: fn(&Game) -> (GuideInfo, Option<String>),
+}
+
+pub const GUIDE_SOURCES: &[GuideSource] = &[
+    GuideSource {
+        id: "steamhunters",
+        label: "SteamHunters",
+        enabled: |s| s.guide_steamhunters,
+        toggle: |s| &mut s.guide_steamhunters,
+        fetch: steamhunters,
+    },
+    GuideSource {
+        id: "howlongtobeat",
+        label: "HowLongToBeat",
+        enabled: |s| s.guide_hltb,
+        toggle: |s| &mut s.guide_hltb,
+        fetch: howlongtobeat,
+    },
+];
+
 pub fn fetch_guides(game: &Game, settings: &Settings) -> (Vec<GuideInfo>, Vec<String>) {
     let mut guides = Vec::new();
     let mut errors = Vec::new();
-    if settings.guide_steamhunters {
-        let (guide, error) = steamhunters(game);
+    for source in GUIDE_SOURCES
+        .iter()
+        .filter(|source| (source.enabled)(settings))
+    {
+        let (guide, error) = (source.fetch)(game);
         if let Some(error) = error {
-            errors.push(format!("steamhunters: {error}"));
-        }
-        guides.push(guide);
-    }
-    if settings.guide_hltb {
-        let (guide, error) = howlongtobeat(game);
-        if let Some(error) = error {
-            errors.push(format!("howlongtobeat: {error}"));
+            errors.push(format!("{}: {error}", source.id));
         }
         guides.push(guide);
     }
@@ -874,6 +898,29 @@ mod tests {
         let (guides, errors) = fetch_guides(&game("Portal 2"), &settings);
         assert!(guides.is_empty());
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn crucial_every_guide_source_toggles_its_own_setting() {
+        assert!(!GUIDE_SOURCES.is_empty());
+        for source in GUIDE_SOURCES {
+            let mut settings = Settings::default();
+            let before = *((source.toggle)(&mut settings));
+            assert_eq!((source.enabled)(&settings), before, "{}", source.id);
+            *((source.toggle)(&mut settings)) = !before;
+            assert_eq!((source.enabled)(&settings), !before, "{}", source.id);
+        }
+        let mut settings = Settings::default();
+        for source in GUIDE_SOURCES {
+            *((source.toggle)(&mut settings)) = false;
+        }
+        assert!(fetch_guides(&game("Portal 2"), &settings).0.is_empty());
+        assert!(
+            GUIDE_SOURCES
+                .iter()
+                .any(|source| (source.enabled)(&Settings::default())),
+            "at least one source is on out of the box"
+        );
     }
 
     #[test]

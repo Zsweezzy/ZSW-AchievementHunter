@@ -1,4 +1,4 @@
-use crate::model::SortMode;
+use crate::model::{AchievementSort, SortMode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,6 +78,8 @@ pub struct Settings {
     pub hide_completed: bool,
     pub hide_unstarted: bool,
     pub sort_mode: SortMode,
+    pub achievement_sort: AchievementSort,
+    pub auto_refresh_minutes: u64,
     pub backups_kept: usize,
     pub ui_scale: f32,
     pub theme: Theme,
@@ -100,6 +102,8 @@ impl Default for Settings {
             hide_completed: false,
             hide_unstarted: false,
             sort_mode: SortMode::Playtime,
+            achievement_sort: AchievementSort::Stored,
+            auto_refresh_minutes: 15,
             backups_kept: 20,
             ui_scale: 1.0,
             theme: Theme::tokyo_night(),
@@ -288,6 +292,15 @@ mod tests {
         assert!(!s.has_steam_credentials());
         s.steam_id = "1".to_owned();
         assert!(s.has_steam_credentials());
+    }
+
+    #[test]
+    fn crucial_missing_new_settings_keep_their_defaults() {
+        let decoded: Settings =
+            toml::from_str("steam_api_key = \"k\"\nsteam_id = \"1\"\n").unwrap();
+        assert_eq!(decoded.steam_api_key, "k");
+        assert_eq!(decoded.auto_refresh_minutes, 15);
+        assert_eq!(decoded.achievement_sort, AchievementSort::Stored);
     }
 
     #[test]
