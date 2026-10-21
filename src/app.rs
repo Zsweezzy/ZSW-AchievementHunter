@@ -2953,7 +2953,7 @@ mod tests {
     fn crucial_save_scan_writes_the_key_the_checkbox_reads() {
         let found: std::collections::BTreeSet<String> = ["crunchie wunchie", "severed arm"]
             .iter()
-            .map(|s| s.to_string())
+            .map(|s| sotf::item_key(s))
             .collect();
         let guide = "FOODIE 0.00%Common\ncrunchie wunchies\nhuman arm\nturtle eggs";
         let keys: HashSet<String> = save_tick_lines(guide, &found).into_iter().collect();
