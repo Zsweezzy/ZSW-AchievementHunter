@@ -50,6 +50,10 @@ pub fn flow_path() -> PathBuf {
     data_dir().join("flow.json")
 }
 
+pub fn pages_dir() -> PathBuf {
+    data_dir().join("pages")
+}
+
 pub fn guides_dir() -> PathBuf {
     data_dir().join("guides")
 }

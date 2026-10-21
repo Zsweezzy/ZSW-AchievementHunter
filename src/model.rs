@@ -1,5 +1,37 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Tag {
+    Multiplayer,
+    Singleplayer,
+    Missable,
+    Grind,
+    Bugged,
+    Impossible,
+}
+
+impl Tag {
+    pub const ALL: [Tag; 6] = [
+        Tag::Multiplayer,
+        Tag::Singleplayer,
+        Tag::Missable,
+        Tag::Grind,
+        Tag::Bugged,
+        Tag::Impossible,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tag::Multiplayer => "multiplayer",
+            Tag::Singleplayer => "singleplayer",
+            Tag::Missable => "missable",
+            Tag::Grind => "grind",
+            Tag::Bugged => "bugged",
+            Tag::Impossible => "impossible",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Achievement {
@@ -14,6 +46,9 @@ pub struct Achievement {
     pub hidden: bool,
     pub note: String,
     pub guide: String,
+    pub mission: String,
+    pub typical_minutes: u32,
+    pub tags: Vec<Tag>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -131,14 +166,16 @@ pub enum AchievementSort {
     Name,
     Rarity,
     UnlockedFirst,
+    NextUp,
 }
 
 impl AchievementSort {
-    pub const ALL: [AchievementSort; 4] = [
+    pub const ALL: [AchievementSort; 5] = [
         AchievementSort::Stored,
         AchievementSort::Name,
         AchievementSort::Rarity,
         AchievementSort::UnlockedFirst,
+        AchievementSort::NextUp,
     ];
 
     pub fn label(self) -> &'static str {
@@ -147,6 +184,7 @@ impl AchievementSort {
             AchievementSort::Name => "Name",
             AchievementSort::Rarity => "Rarest first",
             AchievementSort::UnlockedFirst => "Unlocked first",
+            AchievementSort::NextUp => "Next up",
         }
     }
 }
@@ -159,21 +197,45 @@ pub fn achievement_order(achievements: &[Achievement], sort: AchievementSort) ->
             indices.sort_by_cached_key(|&index| achievements[index].name.to_lowercase())
         }
         AchievementSort::Rarity => indices.sort_by(|&a, &b| {
-            match (
+            percent_asc(
                 achievements[a].global_percent,
                 achievements[b].global_percent,
-            ) {
-                (Some(left), Some(right)) => left.total_cmp(&right),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
+            )
         }),
         AchievementSort::UnlockedFirst => {
             indices.sort_by_key(|&index| !achievements[index].unlocked)
         }
+        AchievementSort::NextUp => indices.sort_by(|&a, &b| {
+            achievements[a]
+                .unlocked
+                .cmp(&achievements[b].unlocked)
+                .then_with(|| {
+                    percent_desc(
+                        achievements[a].global_percent,
+                        achievements[b].global_percent,
+                    )
+                })
+        }),
     }
     indices
+}
+
+fn percent_asc(left: Option<f32>, right: Option<f32>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => left.total_cmp(&right),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn percent_desc(left: Option<f32>, right: Option<f32>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => right.total_cmp(&left),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -234,12 +296,18 @@ impl Game {
     }
 }
 
-pub fn passes_filter(achievement: &Achievement, show_locked: bool, show_unlocked: bool) -> bool {
-    if achievement.unlocked {
+pub fn passes_filter(
+    achievement: &Achievement,
+    show_locked: bool,
+    show_unlocked: bool,
+    tag: Option<Tag>,
+) -> bool {
+    let shown = if achievement.unlocked {
         show_unlocked
     } else {
         show_locked
-    }
+    };
+    shown && tag.is_none_or(|tag| achievement.tags.contains(&tag))
 }
 
 pub fn sort_order_for<'a>(
@@ -315,20 +383,29 @@ mod tests {
     fn crucial_filter_shows_locked_only() {
         let locked = ach("a", false);
         let unlocked = ach("b", true);
-        assert!(passes_filter(&locked, true, false));
-        assert!(!passes_filter(&unlocked, true, false));
+        assert!(passes_filter(&locked, true, false, None));
+        assert!(!passes_filter(&unlocked, true, false, None));
     }
 
     #[test]
     fn crucial_filter_shows_both_when_both_enabled() {
-        assert!(passes_filter(&ach("a", false), true, true));
-        assert!(passes_filter(&ach("b", true), true, true));
+        assert!(passes_filter(&ach("a", false), true, true, None));
+        assert!(passes_filter(&ach("b", true), true, true, None));
+    }
+
+    #[test]
+    fn crucial_tag_filter_keeps_only_tagged_achievements() {
+        let mut tagged = ach("a", false);
+        tagged.tags.push(Tag::Missable);
+        assert!(passes_filter(&tagged, true, true, Some(Tag::Missable)));
+        assert!(!passes_filter(&tagged, true, true, Some(Tag::Grind)));
+        assert!(passes_filter(&tagged, true, true, None));
     }
 
     #[test]
     fn crucial_filter_shows_nothing_when_both_disabled() {
-        assert!(!passes_filter(&ach("a", false), false, false));
-        assert!(!passes_filter(&ach("b", true), false, false));
+        assert!(!passes_filter(&ach("a", false), false, false, None));
+        assert!(!passes_filter(&ach("b", true), false, false, None));
     }
 
     #[test]
@@ -464,6 +541,7 @@ mod tests {
             names(AchievementSort::UnlockedFirst),
             vec!["alpha", "Zeta", "Mid"]
         );
+        assert_eq!(names(AchievementSort::NextUp), vec!["Zeta", "Mid", "alpha"]);
         assert_eq!(
             achievements
                 .iter()

@@ -1,4 +1,4 @@
-use crate::model::{AchievementSort, SortMode};
+use crate::model::{AchievementSort, SortMode, Tag};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -73,6 +73,7 @@ pub struct Settings {
     pub guide_steamhunters: bool,
     pub filter_locked: bool,
     pub filter_unlocked: bool,
+    pub tag_filter: Option<Tag>,
     pub installed_only: bool,
     pub hide_no_achievements: bool,
     pub hide_completed: bool,
@@ -97,6 +98,7 @@ impl Default for Settings {
             guide_steamhunters: true,
             filter_locked: true,
             filter_unlocked: true,
+            tag_filter: None,
             installed_only: false,
             hide_no_achievements: true,
             hide_completed: false,

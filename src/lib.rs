@@ -2,6 +2,7 @@ pub mod app;
 pub mod backup;
 pub mod http;
 pub mod model;
+pub mod page;
 pub mod paths;
 pub mod providers;
 pub mod settings;

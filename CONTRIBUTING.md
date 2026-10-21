@@ -33,7 +33,8 @@ cargo test --lib
 | File | What goes there |
 | --- | --- |
 | `src/app.rs` | The whole GUI: `App`, tabs, background threads, widgets. |
-| `src/model.rs` | Plain data types (`Game`, `Achievement`, …) and filter/sort helpers. |
+| `src/model.rs` | Plain data types (`Game`, `Achievement`, `Tag`, …) and filter/sort helpers. |
+| `src/page.rs` | Per-achievement HTML pages: file paths, save/load, HTML-subset parser. |
 | `src/settings.rs` | `Settings`, theme, fonts. |
 | `src/store.rs` | Loading/saving the persisted documents. |
 | `src/providers.rs` | Third-party sources (guide APIs, SteamGridDB). |

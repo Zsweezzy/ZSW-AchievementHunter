@@ -1,7 +1,8 @@
 use crate::model::{
     self, Achievement, AchievementSort, FlowGraph, FlowNode, Game, GameTab, GuideInfo, SortMode,
-    Tab,
+    Tab, Tag,
 };
+use crate::page;
 use crate::providers;
 use crate::sotf;
 use crate::steam;
@@ -51,6 +52,11 @@ pub struct App {
     reload_after_refresh: Option<u32>,
     /// api_names whose long guide the user expanded this session.
     expanded: HashSet<String>,
+    detail_edit: Option<String>,
+    page_open: Option<(u32, String, String)>,
+    page_html: String,
+    page_edit: Option<(u32, String)>,
+    page_draft: String,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -112,6 +118,11 @@ impl App {
             last_auto_refresh: Instant::now(),
             reload_after_refresh: None,
             expanded: HashSet::new(),
+            detail_edit: None,
+            page_open: None,
+            page_html: String::new(),
+            page_edit: None,
+            page_draft: String::new(),
         };
         app.status = app.ready_status();
         app.attach_all_guide_slices();
@@ -555,36 +566,42 @@ impl App {
         let mut refresh = false;
         let mut filters_changed = false;
         ui.horizontal_wrapped(|ui| {
-            refresh = ui.button("Refresh library").clicked();
-            ui.separator();
+            ui.menu_button("\u{2630}", |ui| {
+                if ui.button("Refresh library").clicked() {
+                    refresh = true;
+                    ui.close();
+                }
+                ui.separator();
+                filters_changed |= ui
+                    .checkbox(&mut self.store.settings.installed_only, "Installed only")
+                    .changed();
+                filters_changed |= ui
+                    .checkbox(
+                        &mut self.store.settings.hide_no_achievements,
+                        "Has achievements",
+                    )
+                    .changed();
+                filters_changed |= ui
+                    .checkbox(&mut self.store.settings.hide_completed, "Hide 100%")
+                    .on_hover_text("Hide games with every achievement unlocked")
+                    .changed();
+                filters_changed |= ui
+                    .checkbox(&mut self.store.settings.hide_unstarted, "Hide 0%")
+                    .on_hover_text("Hide games with no achievement unlocked yet")
+                    .changed();
+                ui.separator();
+                for source in providers::GUIDE_SOURCES {
+                    let mut on = *((source.toggle)(&mut self.store.settings));
+                    if ui
+                        .checkbox(&mut on, format!("{} guides", source.label))
+                        .changed()
+                    {
+                        *((source.toggle)(&mut self.store.settings)) = on;
+                        filters_changed = true;
+                    }
+                }
+            });
             ui.label(format!("{shown} / {total} games"));
-            ui.separator();
-            filters_changed |= ui
-                .checkbox(&mut self.store.settings.installed_only, "Installed only")
-                .changed();
-            filters_changed |= ui
-                .checkbox(
-                    &mut self.store.settings.hide_no_achievements,
-                    "Has achievements",
-                )
-                .changed();
-            filters_changed |= ui
-                .checkbox(&mut self.store.settings.hide_completed, "Hide 100%")
-                .on_hover_text("Hide games with every achievement unlocked")
-                .changed();
-            filters_changed |= ui
-                .checkbox(&mut self.store.settings.hide_unstarted, "Hide 0%")
-                .on_hover_text("Hide games with no achievement unlocked yet")
-                .changed();
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Guides from:");
-            filters_changed |= ui
-                .checkbox(&mut self.store.settings.guide_hltb, "HowLongToBeat")
-                .changed();
-            filters_changed |= ui
-                .checkbox(&mut self.store.settings.guide_steamhunters, "SteamHunters")
-                .changed();
         });
         if filters_changed {
             self.dirty.settings = true;
@@ -694,33 +711,105 @@ impl App {
             self.auto_achievements.insert(appid);
             self.load_achievements(appid);
         }
+        let header = self.store.game(appid).map(|game| {
+            let progress = if !game.achievements.is_empty() {
+                let left = game.achievements.len() - game.unlocked_count();
+                let left = if left == 0 {
+                    String::new()
+                } else {
+                    format!(" \u{2022} {left} left")
+                };
+                format!(
+                    "{} / {} achievements ({:.0}%){left}",
+                    game.unlocked_count(),
+                    game.achievements.len(),
+                    game.completion_percent()
+                )
+            } else if game.has_achievements == Some(false) {
+                "no achievements".to_owned()
+            } else {
+                "achievements not synced".to_owned()
+            };
+            let detail = format!(
+                "{progress} \u{2022} {} hours \u{2022} played {}",
+                game.playtime_minutes / 60,
+                model::humanize_ago(game.last_played)
+            );
+            let guides: Vec<(String, String, String)> = game
+                .guides
+                .iter()
+                .map(|guide| {
+                    (
+                        guide.source.clone(),
+                        guide.summary.clone(),
+                        guide.url.clone(),
+                    )
+                })
+                .collect();
+            (game.name.clone(), detail, guides)
+        });
         let mut back = false;
         let mut load = false;
         let mut guides = false;
+        let mut filters_changed = false;
+        let mut open: Option<String> = None;
         ui.horizontal_wrapped(|ui| {
-            back = ui.button("< Back").clicked();
-            if let Some(game) = self.store.game(appid) {
-                ui.heading(game.name.as_str());
-                let progress = if !game.achievements.is_empty() {
-                    format!(
-                        "{} / {} achievements ({:.0}%)",
-                        game.unlocked_count(),
-                        game.achievements.len(),
-                        game.completion_percent()
-                    )
-                } else if game.has_achievements == Some(false) {
-                    "no achievements".to_owned()
-                } else {
-                    "achievements not synced".to_owned()
-                };
-                ui.label(format!(
-                    "{progress} \u{2022} {} hours \u{2022} played {}",
-                    game.playtime_minutes / 60,
-                    model::humanize_ago(game.last_played)
-                ));
-            }
-            load = ui.button("Load achievements").clicked();
-            guides = ui.button("Fetch guides").clicked();
+            back = ui.button("\u{2039}").clicked();
+            let Some((name, detail, _)) = header.as_ref() else {
+                return;
+            };
+            ui.heading(name.as_str());
+            ui.label(detail.as_str());
+            ui.menu_button("\u{2630}", |ui| {
+                if ui.button("Load achievements").clicked() {
+                    load = true;
+                    ui.close();
+                }
+                if ui.button("Fetch guides").clicked() {
+                    guides = true;
+                    ui.close();
+                }
+                ui.separator();
+                filters_changed |= ui
+                    .checkbox(&mut self.store.settings.filter_locked, "Show locked")
+                    .changed();
+                filters_changed |= ui
+                    .checkbox(&mut self.store.settings.filter_unlocked, "Show unlocked")
+                    .changed();
+                let current = self.store.settings.tag_filter;
+                ui.menu_button(
+                    format!("Tag: {}", current.map_or("any", |tag| tag.label())),
+                    |ui| {
+                        if ui.button("any").clicked() {
+                            self.store.settings.tag_filter = None;
+                            filters_changed = true;
+                            ui.close();
+                        }
+                        for tag in Tag::ALL {
+                            let active = current == Some(tag);
+                            if ui.selectable_label(active, tag.label()).clicked() && !active {
+                                self.store.settings.tag_filter = Some(tag);
+                                filters_changed = true;
+                                ui.close();
+                            }
+                        }
+                    },
+                );
+                ui.separator();
+                if ui.button("PSNProfiles guide").clicked() {
+                    open = Some(
+                        providers::local_psnprofiles_url(appid)
+                            .unwrap_or_else(|| psnprofiles_guide_url(name)),
+                    );
+                    ui.close();
+                }
+                for (label, url) in providers::extra_guide_links(name, appid) {
+                    if ui.button(format!("{label} search")).clicked() {
+                        open = Some(url);
+                        ui.close();
+                    }
+                }
+            });
         });
         if back {
             self.selected = None;
@@ -732,61 +821,19 @@ impl App {
         if guides {
             self.load_guides(appid);
         }
-        let mut filters_changed = false;
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Show:");
-            filters_changed |= ui
-                .checkbox(&mut self.store.settings.filter_locked, "Locked")
-                .changed();
-            filters_changed |= ui
-                .checkbox(&mut self.store.settings.filter_unlocked, "Unlocked")
-                .changed();
-            ui.separator();
-            ui.weak("Right-click an achievement to add a note.");
-        });
         if filters_changed {
             self.dirty.settings = true;
         }
-        let mut open: Option<String> = None;
-        if let Some(game) = self.store.game(appid) {
-            for guide in &game.guides {
+        if let Some((_, _, guides)) = header {
+            for (source, summary, url) in guides {
                 ui.horizontal_wrapped(|ui| {
-                    ui.strong(format!("[{}]", guide.source));
-                    ui.label(guide.summary.as_str());
+                    ui.strong(format!("[{source}]"));
+                    ui.label(summary);
                     if ui.link("open").clicked() {
-                        open = Some(guide.url.clone());
+                        open = Some(url.clone());
                     }
                 });
             }
-            ui.horizontal_wrapped(|ui| {
-                ui.strong("[psnprofiles]");
-                ui.weak("trophy guides for this title");
-                if ui
-                    .link("open")
-                    .on_hover_text(
-                        "Opens the guide you imported, or a psnprofiles guide search. \
-                         psnprofiles.com is Cloudflare-protected and may briefly check your browser.",
-                    )
-                    .clicked()
-                {
-                    open = Some(
-                        providers::local_psnprofiles_url(appid)
-                            .unwrap_or_else(|| psnprofiles_guide_url(&game.name)),
-                    );
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                ui.strong("[more guides]");
-                for (label, url) in providers::extra_guide_links(&game.name, appid) {
-                    if ui
-                        .link(label)
-                        .on_hover_text("Opens a guide search in your browser")
-                        .clicked()
-                    {
-                        open = Some(url);
-                    }
-                }
-            });
         }
         if let Some(url) = open {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -918,13 +965,16 @@ impl App {
             self.dirty.settings = true;
         }
         let sort = self.store.settings.achievement_sort;
-        let (show_locked, show_unlocked) = (
+        let (show_locked, show_unlocked, tag_filter) = (
             self.store.settings.filter_locked,
             self.store.settings.filter_unlocked,
+            self.store.settings.tag_filter,
         );
         let mut touched = false;
+        let mut details_touched = false;
         let mut close_edit = false;
         let mut note_edit = self.note_edit.clone();
+        let mut detail_edit = self.detail_edit.clone();
         let mut checks = self.store.checks.get(&appid).cloned().unwrap_or_default();
         let mut expanded = self.expanded.clone();
         let Some(game) = self.store.game_mut(appid) else {
@@ -943,7 +993,7 @@ impl App {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 for index in order {
                     let achievement = &mut game.achievements[index];
-                    if !model::passes_filter(achievement, show_locked, show_unlocked) {
+                    if !model::passes_filter(achievement, show_locked, show_unlocked, tag_filter) {
                         continue;
                     }
                     let editing = note_edit.as_deref() == Some(achievement.api_name.as_str());
@@ -981,6 +1031,20 @@ impl App {
                                                 note_edit = Some(achievement.api_name.clone());
                                                 ui.close();
                                             }
+                                            if ui.button("Edit details").clicked() {
+                                                detail_edit = Some(achievement.api_name.clone());
+                                                ui.close();
+                                            }
+                                            if ui.button("Page").clicked() {
+                                                self.page_html =
+                                                    page::load(appid, &achievement.api_name);
+                                                self.page_open = Some((
+                                                    appid,
+                                                    achievement.api_name.clone(),
+                                                    achievement.name.clone(),
+                                                ));
+                                                ui.close();
+                                            }
                                             if ui.button("Clear note").clicked() {
                                                 achievement.note.clear();
                                                 touched = true;
@@ -990,6 +1054,22 @@ impl App {
                                     }
                                     if !achievement.description.is_empty() {
                                         ui.label(achievement.description.as_str());
+                                    }
+                                    if !achievement.mission.is_empty()
+                                        || achievement.typical_minutes > 0
+                                        || !achievement.tags.is_empty()
+                                    {
+                                        ui.horizontal_wrapped(|ui| {
+                                            if !achievement.mission.is_empty() {
+                                                ui.weak(achievement.mission.as_str());
+                                            }
+                                            if achievement.typical_minutes > 0 {
+                                                ui.weak(hours_label(achievement.typical_minutes));
+                                            }
+                                            for tag in &achievement.tags {
+                                                ui.colored_label(tag_color(ui, *tag), tag.label());
+                                            }
+                                        });
                                     }
                                     if editing {
                                         if ui
@@ -1007,6 +1087,65 @@ impl App {
                                         }
                                     } else if !achievement.note.is_empty() {
                                         ui.weak(achievement.note.as_str());
+                                    }
+                                    if detail_edit.as_deref() == Some(achievement.api_name.as_str())
+                                    {
+                                        ui.add_space(2.0);
+                                        egui::Grid::new(("details", &achievement.api_name))
+                                            .num_columns(2)
+                                            .min_col_width(72.0)
+                                            .spacing([8.0, 4.0])
+                                            .show(ui, |ui| {
+                                                ui.label("Mission");
+                                                details_touched |= ui
+                                                    .add(
+                                                        egui::TextEdit::singleline(
+                                                            &mut achievement.mission,
+                                                        )
+                                                        .hint_text("chapter / mission")
+                                                        .desired_width(320.0),
+                                                    )
+                                                    .changed();
+                                                ui.end_row();
+                                                ui.label("Typical time");
+                                                let mut hours =
+                                                    achievement.typical_minutes as f32 / 60.0;
+                                                if ui
+                                                    .add(
+                                                        egui::DragValue::new(&mut hours)
+                                                            .range(0.0..=999.0)
+                                                            .speed(0.25)
+                                                            .suffix(" h"),
+                                                    )
+                                                    .changed()
+                                                {
+                                                    achievement.typical_minutes =
+                                                        (hours * 60.0).round() as u32;
+                                                    details_touched = true;
+                                                }
+                                                ui.end_row();
+                                                ui.label("Tags");
+                                                ui.horizontal_wrapped(|ui| {
+                                                    for tag in Tag::ALL {
+                                                        let mut on =
+                                                            achievement.tags.contains(&tag);
+                                                        if ui
+                                                            .checkbox(&mut on, tag.label())
+                                                            .changed()
+                                                        {
+                                                            if on {
+                                                                achievement.tags.push(tag);
+                                                            } else {
+                                                                achievement
+                                                                    .tags
+                                                                    .retain(|kept| *kept != tag);
+                                                            }
+                                                            details_touched = true;
+                                                        }
+                                                    }
+                                                });
+                                                ui.end_row();
+                                            });
                                     }
                                     if !achievement.guide.is_empty() {
                                         ui.add_space(2.0);
@@ -1083,6 +1222,10 @@ impl App {
             });
         self.note_edit = if close_edit { None } else { note_edit };
         self.expanded = expanded;
+        self.detail_edit = detail_edit;
+        if details_touched {
+            self.dirty.library = true;
+        }
         if touched {
             self.store.checks.insert(appid, checks);
             self.dirty.checks = true;
@@ -1119,9 +1262,10 @@ impl App {
             ui.label("No achievements cached for this game. Load them from the Games tab.");
             return;
         }
-        let (show_locked, show_unlocked) = (
+        let (show_locked, show_unlocked, tag_filter) = (
             self.store.settings.filter_locked,
             self.store.settings.filter_unlocked,
+            self.store.settings.tag_filter,
         );
         let mut order: Vec<String> = rows.iter().map(|a| a.api_name.clone()).collect();
         let mut pending = None;
@@ -1129,7 +1273,7 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (index, achievement) in rows.iter().enumerate() {
-                    if !model::passes_filter(achievement, show_locked, show_unlocked) {
+                    if !model::passes_filter(achievement, show_locked, show_unlocked, tag_filter) {
                         continue;
                     }
                     let (_, dropped) = ui.dnd_drop_zone::<usize, _>(egui::Frame::NONE, |ui| {
@@ -1198,9 +1342,10 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        let (show_locked, show_unlocked) = (
+        let (show_locked, show_unlocked, tag_filter) = (
             self.store.settings.filter_locked,
             self.store.settings.filter_unlocked,
+            self.store.settings.tag_filter,
         );
         let mut graph = self.store.flow.remove(&appid).unwrap_or_default();
         let visible: Vec<bool> = graph
@@ -1210,7 +1355,7 @@ impl App {
                 achievements
                     .get(&node.api_name)
                     .map(|achievement| {
-                        model::passes_filter(achievement, show_locked, show_unlocked)
+                        model::passes_filter(achievement, show_locked, show_unlocked, tag_filter)
                     })
                     .unwrap_or(true)
             })
@@ -1411,6 +1556,98 @@ impl App {
             });
         }
         self.dirty.flow = true;
+    }
+
+    fn page_window(&mut self, ctx: &egui::Context) {
+        let Some((appid, api_name, title)) = self.page_open.clone() else {
+            return;
+        };
+        let mut open = true;
+        let (mut edit, mut browser) = (false, false);
+        egui::Window::new(format!("Page: {title}"))
+            .open(&mut open)
+            .default_size([620.0, 560.0])
+            .show(ctx, |ui| {
+                if self.page_html.trim().is_empty() {
+                    ui.weak("No page for this achievement yet.");
+                    if ui.button("Write page (HTML)").clicked() {
+                        edit = true;
+                    }
+                    return;
+                }
+                ui.horizontal(|ui| {
+                    edit |= ui.button("Edit HTML").clicked();
+                    browser |= ui.button("Open in browser").clicked();
+                });
+                ui.separator();
+                let base = page::path(appid, &api_name);
+                let html = self.page_html.clone();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| render_page(ui, &html, base.parent()));
+            });
+        if !open {
+            self.page_open = None;
+        }
+        if edit {
+            self.page_draft = if self.page_html.trim().is_empty() {
+                page::template(&title)
+            } else {
+                self.page_html.clone()
+            };
+            self.page_edit = Some((appid, api_name.clone()));
+        }
+        if browser {
+            let url = format!("file://{}", page::path(appid, &api_name).display());
+            ctx.open_url(egui::OpenUrl::new_tab(url));
+        }
+    }
+
+    fn page_editor(&mut self, ctx: &egui::Context) {
+        let Some((appid, api_name)) = self.page_edit.clone() else {
+            return;
+        };
+        let mut open = true;
+        egui::Window::new(format!("Edit page: {api_name}"))
+            .open(&mut open)
+            .default_size([680.0, 520.0])
+            .show(ctx, |ui| {
+                ui.weak(
+                    "HTML subset: h1-h6, p, ul/li, b, i, code, pre, hr, img, a. \
+                     Images are relative to the page file.",
+                );
+                egui::ScrollArea::vertical()
+                    .max_height(420.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.page_draft)
+                                .code_editor()
+                                .desired_rows(20)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        match page::save(appid, &api_name, &self.page_draft) {
+                            Ok(_) => {
+                                self.page_html = self.page_draft.clone();
+                                self.status = "Page saved.".to_owned();
+                            }
+                            Err(error) => self.status = format!("Page save failed: {error}"),
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.page_edit = None;
+                    }
+                    if ui.button("Open in browser").clicked() {
+                        let url = format!("file://{}", page::path(appid, &api_name).display());
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    }
+                });
+            });
+        if !open {
+            self.page_edit = None;
+        }
     }
 
     fn settings_tab(&mut self, ui: &mut egui::Ui) {
@@ -1651,6 +1888,8 @@ impl App {
             Tab::Games => self.games_tab(ui),
             Tab::Settings => self.settings_tab(ui),
         });
+        self.page_window(ui.ctx());
+        self.page_editor(ui.ctx());
         self.autosave(ui.ctx());
     }
 
@@ -1681,12 +1920,152 @@ impl App {
             last_auto_refresh: Instant::now(),
             reload_after_refresh: None,
             expanded: HashSet::new(),
+            detail_edit: None,
+            page_open: None,
+            page_html: String::new(),
+            page_edit: None,
+            page_draft: String::new(),
         }
     }
 }
 
 /// Time until the next periodic refresh, or `None` when auto-refresh is off.
 /// A zero duration means the refresh is due now.
+fn hours_label(minutes: u32) -> String {
+    let hours = minutes as f32 / 60.0;
+    if (hours * 10.0).round() % 10.0 == 0.0 {
+        format!("~{hours:.0} h")
+    } else {
+        format!("~{hours:.1} h")
+    }
+}
+
+fn tag_color(ui: &egui::Ui, tag: Tag) -> egui::Color32 {
+    let visuals = ui.visuals();
+    match tag {
+        Tag::Missable | Tag::Impossible => visuals.warn_fg_color,
+        Tag::Bugged => visuals.error_fg_color,
+        Tag::Multiplayer => visuals.hyperlink_color,
+        Tag::Grind => visuals.selection.stroke.color,
+        Tag::Singleplayer => visuals.text_color().gamma_multiply(0.75),
+    }
+}
+
+fn render_page(ui: &mut egui::Ui, html: &str, base: Option<&std::path::Path>) {
+    for block in page::parse(html) {
+        match block {
+            page::Block::Heading(spans) => {
+                ui.add_space(6.0);
+                styled_text(ui, &spans, true);
+            }
+            page::Block::Paragraph(spans) => styled_text(ui, &spans, false),
+            page::Block::Item(spans) => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("\u{2022}");
+                    styled_text(ui, &spans, false);
+                });
+            }
+            page::Block::Quote(spans) => {
+                ui.horizontal(|ui| {
+                    ui.label("\u{2502}");
+                    ui.vertical(|ui| styled_text(ui, &spans, false));
+                });
+            }
+            page::Block::Code(text) => {
+                egui::Frame::NONE
+                    .fill(ui.visuals().extreme_bg_color)
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(text).monospace());
+                    });
+            }
+            page::Block::Rule => {
+                ui.separator();
+            }
+            page::Block::Image(src) => {
+                if src.starts_with("http://") || src.starts_with("https://") {
+                    ui.hyperlink_to(src.as_str(), src.as_str());
+                    continue;
+                }
+                let file = match base {
+                    Some(base) => base.join(&src),
+                    None => std::path::PathBuf::from(&src),
+                };
+                if file.exists() {
+                    ui.add(
+                        egui::Image::new(format!("file://{}", file.display()))
+                            .max_size(egui::vec2(ui.available_width().min(560.0), 480.0))
+                            .maintain_aspect_ratio(true),
+                    );
+                } else {
+                    ui.weak(format!("image not found: {}", file.display()));
+                }
+            }
+        }
+    }
+}
+
+fn styled_text(ui: &mut egui::Ui, spans: &[page::Span], heading: bool) {
+    let visuals = ui.visuals();
+    let style = if heading {
+        egui::TextStyle::Heading
+    } else {
+        egui::TextStyle::Body
+    };
+    let font = ui
+        .style()
+        .text_styles
+        .get(&style)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(14.0));
+    let base = egui::TextFormat {
+        font_id: font.clone(),
+        color: visuals.text_color(),
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    let mut links: Vec<&str> = Vec::new();
+    for span in spans {
+        let mut format = base.clone();
+        let text = match span {
+            page::Span::Text(text) => text.as_str(),
+            page::Span::Bold(text) => {
+                format.color = visuals.text_color().gamma_multiply(1.4);
+                text.as_str()
+            }
+            page::Span::Italic(text) => {
+                format.italics = true;
+                text.as_str()
+            }
+            page::Span::Code(text) => {
+                format.font_id = egui::FontId::monospace(font.size - 1.0);
+                format.background = visuals.extreme_bg_color;
+                text.as_str()
+            }
+            page::Span::Link(text, href) => {
+                format.color = visuals.hyperlink_color;
+                format.underline = egui::Stroke::new(1.0, visuals.hyperlink_color);
+                if !href.is_empty() {
+                    links.push(href);
+                }
+                text.as_str()
+            }
+        };
+        job.append(text, 0.0, format);
+    }
+    for href in links {
+        let format = egui::TextFormat {
+            font_id: font.clone(),
+            color: visuals.hyperlink_color,
+            underline: egui::Stroke::new(1.0, visuals.hyperlink_color),
+            ..Default::default()
+        };
+        job.append(" ", 0.0, base.clone());
+        job.append(href, 0.0, format);
+    }
+    ui.label(job);
+}
+
 fn refresh_delay(elapsed: std::time::Duration, minutes: u64) -> Option<std::time::Duration> {
     if minutes == 0 {
         return None;
@@ -1782,13 +2161,9 @@ fn achievement_icon(
     if path.exists() {
         // `ui.put` would move the parent cursor back to the icon's bottom, pulling the
         // next row up into this one. A child ui paints without touching the cursor.
-        let mut icon_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect)
-                .layout(egui::Layout::centered_and_justified(
-                    egui::Direction::LeftToRight,
-                )),
-        );
+        let mut icon_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(
+            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+        ));
         icon_ui.add(
             egui::Image::new(format!("file://{}", path.display()))
                 .fit_to_exact_size(egui::vec2(size, size))
@@ -2171,6 +2546,7 @@ mod tests {
                     hidden: false,
                     note: "my note".to_owned(),
                     guide: String::new(),
+                    ..Default::default()
                 },
                 Achievement {
                     api_name: "B".to_owned(),
@@ -2433,6 +2809,22 @@ mod tests {
 
         app.tab = Tab::Games;
         app.selected = Some(620);
+        if let Some(game) = app.store.game_mut(620)
+            && let Some(first) = game.achievements.first_mut()
+        {
+            first.mission = "Chapter 1".to_owned();
+            first.typical_minutes = 90;
+            first.tags = vec![Tag::Missable, Tag::Grind];
+        }
+        app.detail_edit = Some("A".to_owned());
+        app.store.settings.tag_filter = Some(Tag::Missable);
+        app.page_open = Some((620, "A".to_owned(), "Awake".to_owned()));
+        app.page_html = "<h1>Page</h1><p>plain <b>bold</b> <i>ital</i> <code>code</code> \
+             <a href=\"https://example.com\">link</a></p><ul><li>item</li></ul>\
+             <pre>  block</pre><hr><img src=\"missing.png\">"
+            .to_owned();
+        app.page_edit = Some((620, "A".to_owned()));
+        app.page_draft = app.page_html.clone();
         for game_tab in GameTab::ALL {
             app.game_tab = game_tab;
             ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui))
@@ -2543,14 +2935,17 @@ mod tests {
         // the intro sentence ends in a full stop, so it is prose, not an item
         assert!(!items.contains("This achievement includes:"), "{items:?}");
 
-        let prose = "Same as the Tradesman achievement.\nJust build with logs until 100 have been used.";
+        let prose =
+            "Same as the Tradesman achievement.\nJust build with logs until 100 have been used.";
         assert!(checklist_lines(prose).is_empty(), "{prose:?}");
     }
 
     #[test]
     fn crucial_save_scan_writes_the_key_the_checkbox_reads() {
-        let found: std::collections::BTreeSet<String> =
-            ["crunchie wunchie", "severed arm"].iter().map(|s| s.to_string()).collect();
+        let found: std::collections::BTreeSet<String> = ["crunchie wunchie", "severed arm"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let guide = "FOODIE 0.00%Common\ncrunchie wunchies\nhuman arm\nturtle eggs";
         let keys: HashSet<String> = save_tick_lines(guide, &found).into_iter().collect();
 
@@ -2639,8 +3034,10 @@ mod tests {
         }
 
         let mut input = egui::RawInput::default();
-        input.screen_rect =
-            Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(947.0, 510.0)));
+        input.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(947.0, 510.0),
+        ));
         let out = ctx.run_ui(input, |ui| app.achievement_list(ui, 1));
         let rects = text_rects(&out);
         assert!(rects.len() > 20, "expected text, got {}", rects.len());
@@ -2724,7 +3121,10 @@ mod tests {
             .drop_without_applying_deltas();
         ctx.run_ui(press(false), |ui| app.achievement_list(ui, 1))
             .drop_without_applying_deltas();
-        assert!(app.expanded.contains("a0"), "clicking Show guide expands it");
+        assert!(
+            app.expanded.contains("a0"),
+            "clicking Show guide expands it"
+        );
 
         let out = ctx.run_ui(raw(Vec::new()), |ui| app.achievement_list(ui, 1));
         assert!(

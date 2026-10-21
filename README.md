@@ -21,9 +21,19 @@ no webview, no bundled browser — one native executable.
 - **Achievement view** — per-game achievement list with the game's own icon for
   each achievement (dimmed when still locked), global unlock rates, a `hidden`
   badge for achievements Steam hides until they are earned, and per-achievement
-  notes. Notes stay hidden until you right-click an achievement and pick
-  *Add / edit note*. Sort the list by default order, name, rarity, or unlocked
-  first without disturbing the custom order.
+  notes. Notes, details, and pages stay hidden until you right-click an
+  achievement. Sort the list by default order, name, rarity, unlocked first, or
+  *Next up* (the locked achievements most players have, i.e. the likeliest to
+  pop next) without disturbing the custom order.
+- **Achievement details** — a mission/chapter line, a manual typical time to
+  unlock (hours), and tags (multiplayer, singleplayer, missable, grind, bugged,
+  impossible). Tags show under the achievement and filter the list. Steam has no
+  public per-achievement pop-time data, so the typical time is yours to set.
+- **Per-achievement pages** — write an HTML page per achievement (headings,
+  paragraphs, lists, bold/italic, code, images, links) and the app renders it
+  inline; *Open in browser* shows the real file. Pages live as plain `.html`
+  files under `pages/<appid>/`, so you can edit them in any editor and keep
+  screenshots next to them.
 - **Guides** — completion time, difficulty, and per-achievement data from the
   SteamHunters JSON API, plus a HowLongToBeat link. Toggle which sources are
   queried. A source that cannot be reached degrades to a link, never an error.
@@ -52,8 +62,8 @@ renderer proxy and even with an imported, signed-in `cf_clearance` cookie — so
 scraper ships for them. Each game page therefore links out to PSNProfiles' own
 guide search (and to HowLongToBeat when that source is enabled), which never fails
 because your browser does the work. Per-achievement *type* (story, online,
-missable) has no public source in any of these APIs, so it is not shown rather
-than guessed.
+missable) has no public source in any of these APIs, so the app does not guess
+it — the tags on each achievement are what you set yourself.
 
 ## Install
 
@@ -68,6 +78,13 @@ cargo build --release
 
 The binary is self-contained. Nothing else needs to be installed for the app to
 run.
+
+For the smallest binary (~4 MB instead of ~12 MB), `scripts/dist.sh` builds and
+packs it with UPX:
+
+```
+./scripts/dist.sh
+```
 
 ## Steam credentials
 
@@ -96,9 +113,10 @@ Stored under your platform data directory (override with
 | File | Contents |
 | --- | --- |
 | `settings.toml` | Theme, fonts, interface scale, credentials, filters, sort modes, auto-refresh interval. |
-| `library.json` | Games, achievements, notes, guide cache. |
+| `library.json` | Games, achievements, notes, missions, typical times, tags, guide cache. |
 | `flow.json` | Flowgraph nodes and edges. |
 | `sort.json` | Custom achievement ordering. |
+| `pages/<appid>/<api_name>.html` | Your per-achievement pages; relative images sit next to them. |
 
 Achievement and cover-art images are cached under `cache/icons/` and
 `cache/art/` in the same tree. Cover art is cached for every game; achievement

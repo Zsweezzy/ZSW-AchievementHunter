@@ -136,8 +136,8 @@ one entry — see `CONTRIBUTING.md`.
 - **Unsynced counts.** A game with no cached achievements reads "achievements not
   synced" (or "no achievements" when Steam says it has none) instead of a
   misleading `0 / 0`.
-- **Locked/Unlocked toggles live in the game page**, next to the achievement
-  list, not on the library page.
+- **Locked/Unlocked toggles live in the game page**, behind its `☰` menu, not on
+  the library page.
 - **Installed-game precache.** `App::prefetch_installed` walks installed games
   that have no cached achievements, once per session, and loads them one at a
   time via `prefetch` (queue) and `prefetch_busy` (single in-flight guard). This
@@ -148,11 +148,33 @@ one entry — see `CONTRIBUTING.md`.
   unlocked). A game with no cached achievements is never treated as 0% or 100% —
   unsynced is not a value, so it survives both filters. This also means the two
   percentage filters only bite once achievements have been fetched.
-- **Library sort lives in Settings.** The Games page keeps only Refresh, the
-  game count, the two filters, and the guide-source toggles. Sort mode (playtime
-  / last played / name) is a Settings row because it re-sorts `library.json`
-  itself; changing it marks both `settings` and `library` dirty so the choice
-  survives a restart.
+- **Library sort lives in Settings.** Sort mode (playtime / last played / name)
+  re-sorts `library.json` itself; changing it marks both `settings` and
+  `library` dirty so the choice survives a restart.
+- **Burger menus keep the chrome small.** The library header is a `☰` menu
+  (refresh, filters, guide sources) plus the game count; the game header is a
+  `☰` menu (load achievements, fetch guides, show locked/unlocked, tag filter,
+  guide links). Only the completion line stays visible.
+- **Filters are a view.** Locked/unlocked and the tag filter live in `Settings`
+  and never reorder or drop stored achievements. `model::passes_filter` is the
+  one gate all three game tabs use.
+- **Achievement details** (`mission`, `typical_minutes`, `tags`) are edited in an
+  inline grid opened from the row's right-click menu, right where the note
+  editor renders. `typical_minutes == 0` means "not set"; the UI edits hours.
+- **Achievement pages** are plain HTML files under
+  `paths::pages_dir()/<appid>/<sanitized api_name>.html` — an asset directory
+  like `guides/`, not a `Store` document, so they are not backed up or rewritten
+  by autosave. `page::parse` renders the subset (h1-h6, p, ul/li, b/i/em/
+  strong, code, pre, hr, img, a) into `page::Block`s; `app::render_page` draws
+  them with a `LayoutJob`, and *Open in browser* hands the real file over. Links
+  are shown as text plus the href, images by path, because egui has no HTML
+  engine and a webview would defeat the single-binary goal.
+  A page opens in its own resizable window with its own `ScrollArea`: rendering
+  it inline inside a row would clip at the row's viewport height, because a
+  child `Ui` cannot grow past its parent's `max_rect` (same reason long rows
+  under-measure). Keep long content in a window or its own scroll area.
+- **Next up** (`AchievementSort::NextUp`) is locked-first, then most common
+  global unlock rate first, unknown rates last. It is display order only.
 - **Responsive grid, exact cell geometry.** Art cells are placed in
   `ui.horizontal_wrapped` (never an `egui::Grid`, which stretches columns to the
   window and leaves uneven gaps), and each cell's rect comes from
@@ -199,6 +221,8 @@ one entry — see `CONTRIBUTING.md`.
 
 - `settings.toml` — TOML (`paths::settings_path`).
 - `library.json`, `flow.json`, `sort.json` — JSON (`paths::library_path` etc.).
+- `pages/<appid>/<api_name>.html` — achievement pages, plain files
+  (`paths::pages_dir`); relative `img src` paths resolve against that folder.
 - Backups land in `paths::backup_dir()` as `<stem>.<utc-stamp>.<ext>`.
 
 ## Testing
@@ -227,13 +251,11 @@ records that glibc as the ELF interpreter; its loader does not search
 CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=/usr/bin/gcc cargo build --release
 ```
 
-For the smallest artifact, pack the stripped binary with UPX (a packaging
-step, not part of `cargo`):
-
-```sh
-upx --best --lzma target/release/achievement-hunter \
-  -o target/release/achievement-hunter.upx
-```
+For the smallest artifact, run `scripts/dist.sh`: it builds the release binary
+and packs a copy with UPX (`--best --lzma`) into
+`target/release/achievement-hunter.upx`. UPX is optional — without it the script
+prints a note and keeps the plain build. The release build itself is already
+stripped and size-tuned by `Cargo.toml`.
 
 Reference sizes: 36 MB (old profile) -> 12.4 MB (size profile) -> 4.2 MB
 (UPX). UPX costs a few ms of startup decompression and is flagged by some
