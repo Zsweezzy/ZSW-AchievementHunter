@@ -15,6 +15,13 @@ fn main() -> eframe::Result<()> {
             .with_title("Achievement Hunter")
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([900.0, 600.0]),
+        // A vsynced swap blocks until the compositor presents, and a window on a
+        // hidden workspace never gets a frame callback: the loop then misses
+        // Wayland pings and Hyprland shows its "not responding" dialog.
+        glow_options: eframe::egui_glow::GlowConfiguration {
+            vsync: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
     eframe::run_native(

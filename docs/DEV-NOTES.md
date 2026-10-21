@@ -274,6 +274,10 @@ artifacts at any time; the installed binary lives in `~/.local/bin`.
 - No screenshot-based visual test; CI runs the headless render test instead.
 - The `hidden` badge needs a Steam API key: without one the schema is never
   fetched, so no achievement is marked hidden.
+- Vsync is off on purpose (`main.rs`): a vsynced buffer swap blocks until the
+  compositor presents, and a window on a hidden Hyprland workspace never gets a
+  frame callback. The loop then misses `xdg_wm_base` pings and Hyprland shows
+  its "Application Not Responding" dialog about a perfectly healthy app.
 - Effective guide sources are SteamHunters and links outward; HowLongToBeat
   blocks non-browser requests and PSNProfiles blocks them entirely, so both are
   link-only (PSNProfiles links to its guide search, see "Guide sources").

@@ -566,42 +566,44 @@ impl App {
         let mut refresh = false;
         let mut filters_changed = false;
         ui.horizontal_wrapped(|ui| {
-            ui.menu_button("\u{2630}", |ui| {
-                if ui.button("Refresh library").clicked() {
-                    refresh = true;
-                    ui.close();
-                }
-                ui.separator();
-                filters_changed |= ui
-                    .checkbox(&mut self.store.settings.installed_only, "Installed only")
-                    .changed();
-                filters_changed |= ui
-                    .checkbox(
-                        &mut self.store.settings.hide_no_achievements,
-                        "Has achievements",
-                    )
-                    .changed();
-                filters_changed |= ui
-                    .checkbox(&mut self.store.settings.hide_completed, "Hide 100%")
-                    .on_hover_text("Hide games with every achievement unlocked")
-                    .changed();
-                filters_changed |= ui
-                    .checkbox(&mut self.store.settings.hide_unstarted, "Hide 0%")
-                    .on_hover_text("Hide games with no achievement unlocked yet")
-                    .changed();
-                ui.separator();
-                for source in providers::GUIDE_SOURCES {
-                    let mut on = *((source.toggle)(&mut self.store.settings));
-                    if ui
-                        .checkbox(&mut on, format!("{} guides", source.label))
-                        .changed()
-                    {
-                        *((source.toggle)(&mut self.store.settings)) = on;
-                        filters_changed = true;
-                    }
-                }
-            });
             ui.label(format!("{shown} / {total} games"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("\u{2630}", |ui| {
+                    if ui.button("Refresh library").clicked() {
+                        refresh = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    filters_changed |= ui
+                        .checkbox(&mut self.store.settings.installed_only, "Installed only")
+                        .changed();
+                    filters_changed |= ui
+                        .checkbox(
+                            &mut self.store.settings.hide_no_achievements,
+                            "Has achievements",
+                        )
+                        .changed();
+                    filters_changed |= ui
+                        .checkbox(&mut self.store.settings.hide_completed, "Hide 100%")
+                        .on_hover_text("Hide games with every achievement unlocked")
+                        .changed();
+                    filters_changed |= ui
+                        .checkbox(&mut self.store.settings.hide_unstarted, "Hide 0%")
+                        .on_hover_text("Hide games with no achievement unlocked yet")
+                        .changed();
+                    ui.separator();
+                    for source in providers::GUIDE_SOURCES {
+                        let mut on = *((source.toggle)(&mut self.store.settings));
+                        if ui
+                            .checkbox(&mut on, format!("{} guides", source.label))
+                            .changed()
+                        {
+                            *((source.toggle)(&mut self.store.settings)) = on;
+                            filters_changed = true;
+                        }
+                    }
+                });
+            });
         });
         if filters_changed {
             self.dirty.settings = true;
@@ -760,55 +762,57 @@ impl App {
             };
             ui.heading(name.as_str());
             ui.label(detail.as_str());
-            ui.menu_button("\u{2630}", |ui| {
-                if ui.button("Load achievements").clicked() {
-                    load = true;
-                    ui.close();
-                }
-                if ui.button("Fetch guides").clicked() {
-                    guides = true;
-                    ui.close();
-                }
-                ui.separator();
-                filters_changed |= ui
-                    .checkbox(&mut self.store.settings.filter_locked, "Show locked")
-                    .changed();
-                filters_changed |= ui
-                    .checkbox(&mut self.store.settings.filter_unlocked, "Show unlocked")
-                    .changed();
-                let current = self.store.settings.tag_filter;
-                ui.menu_button(
-                    format!("Tag: {}", current.map_or("any", |tag| tag.label())),
-                    |ui| {
-                        if ui.button("any").clicked() {
-                            self.store.settings.tag_filter = None;
-                            filters_changed = true;
-                            ui.close();
-                        }
-                        for tag in Tag::ALL {
-                            let active = current == Some(tag);
-                            if ui.selectable_label(active, tag.label()).clicked() && !active {
-                                self.store.settings.tag_filter = Some(tag);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("\u{2630}", |ui| {
+                    if ui.button("Load achievements").clicked() {
+                        load = true;
+                        ui.close();
+                    }
+                    if ui.button("Fetch guides").clicked() {
+                        guides = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    filters_changed |= ui
+                        .checkbox(&mut self.store.settings.filter_locked, "Show locked")
+                        .changed();
+                    filters_changed |= ui
+                        .checkbox(&mut self.store.settings.filter_unlocked, "Show unlocked")
+                        .changed();
+                    let current = self.store.settings.tag_filter;
+                    ui.menu_button(
+                        format!("Tag: {}", current.map_or("any", |tag| tag.label())),
+                        |ui| {
+                            if ui.button("any").clicked() {
+                                self.store.settings.tag_filter = None;
                                 filters_changed = true;
                                 ui.close();
                             }
-                        }
-                    },
-                );
-                ui.separator();
-                if ui.button("PSNProfiles guide").clicked() {
-                    open = Some(
-                        providers::local_psnprofiles_url(appid)
-                            .unwrap_or_else(|| psnprofiles_guide_url(name)),
+                            for tag in Tag::ALL {
+                                let active = current == Some(tag);
+                                if ui.selectable_label(active, tag.label()).clicked() && !active {
+                                    self.store.settings.tag_filter = Some(tag);
+                                    filters_changed = true;
+                                    ui.close();
+                                }
+                            }
+                        },
                     );
-                    ui.close();
-                }
-                for (label, url) in providers::extra_guide_links(name, appid) {
-                    if ui.button(format!("{label} search")).clicked() {
-                        open = Some(url);
+                    ui.separator();
+                    if ui.button("PSNProfiles guide").clicked() {
+                        open = Some(
+                            providers::local_psnprofiles_url(appid)
+                                .unwrap_or_else(|| psnprofiles_guide_url(name)),
+                        );
                         ui.close();
                     }
-                }
+                    for (label, url) in providers::extra_guide_links(name, appid) {
+                        if ui.button(format!("{label} search")).clicked() {
+                            open = Some(url);
+                            ui.close();
+                        }
+                    }
+                });
             });
         });
         if back {
@@ -964,6 +968,11 @@ impl App {
         if sort_changed {
             self.dirty.settings = true;
         }
+        ui.label(
+            egui::RichText::new("Right-click an achievement name for tags, time and its page.")
+                .weak()
+                .small(),
+        );
         let sort = self.store.settings.achievement_sort;
         let (show_locked, show_unlocked, tag_filter) = (
             self.store.settings.filter_locked,
