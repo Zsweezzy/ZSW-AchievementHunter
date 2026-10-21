@@ -907,8 +907,9 @@ impl App {
                                     // report their real height; otherwise the row under-measures
                                     // and the next row paints on top of it.
                                     ui.set_width(ui.available_width());
+                                    let mut title = None;
                                     ui.horizontal_wrapped(|ui| {
-                                        ui.strong(achievement.name.as_str());
+                                        title = Some(ui.strong(achievement.name.as_str()));
                                         if achievement.hidden {
                                             ui.colored_label(ui.visuals().warn_fg_color, "hidden");
                                         }
@@ -919,6 +920,19 @@ impl App {
                                             ui.weak(format!("{percent:.1}% of players"));
                                         }
                                     });
+                                    if let Some(title) = title {
+                                        title.context_menu(|ui| {
+                                            if ui.button("Add / edit note").clicked() {
+                                                note_edit = Some(achievement.api_name.clone());
+                                                ui.close();
+                                            }
+                                            if ui.button("Clear note").clicked() {
+                                                achievement.note.clear();
+                                                touched = true;
+                                                ui.close();
+                                            }
+                                        });
+                                    }
                                     if !achievement.description.is_empty() {
                                         ui.label(achievement.description.as_str());
                                     }
@@ -1009,18 +1023,6 @@ impl App {
                             ICON_SIZE,
                         );
                     }
-                    let response = row.response.interact(egui::Sense::click());
-                    response.context_menu(|ui| {
-                        if ui.button("Add / edit note").clicked() {
-                            note_edit = Some(achievement.api_name.clone());
-                            ui.close();
-                        }
-                        if ui.button("Clear note").clicked() {
-                            achievement.note.clear();
-                            touched = true;
-                            ui.close();
-                        }
-                    });
                     ui.separator();
                 }
             });
@@ -1689,8 +1691,16 @@ fn achievement_icon(
 ) {
     let path = crate::paths::icon_path(appid, api_name, !unlocked);
     if path.exists() {
-        ui.put(
-            rect,
+        // `ui.put` would move the parent cursor back to the icon's bottom, pulling the
+        // next row up into this one. A child ui paints without touching the cursor.
+        let mut icon_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::centered_and_justified(
+                    egui::Direction::LeftToRight,
+                )),
+        );
+        icon_ui.add(
             egui::Image::new(format!("file://{}", path.display()))
                 .fit_to_exact_size(egui::vec2(size, size))
                 .corner_radius(6.0),
@@ -2501,6 +2511,14 @@ mod tests {
             })
             .collect();
 
+        // Icons must exist on disk: drawing one used to move the row cursor backwards,
+        // which pulled the next row up into a tall one.
+        for i in 0..4 {
+            let icon = crate::paths::icon_path(1, &format!("a{i}"), true);
+            std::fs::create_dir_all(icon.parent().unwrap()).unwrap();
+            std::fs::write(&icon, b"x").unwrap();
+        }
+
         let ctx = egui::Context::default();
         let mut app = App::headless(ctx.clone());
         app.store.games = vec![game];
@@ -2532,6 +2550,104 @@ mod tests {
         out.drop_without_applying_deltas();
         unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crucial_guide_button_toggles_the_guide() {
+        let _guard = crate::test_env_lock();
+        let dir = std::env::temp_dir().join(format!("ah-fold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("ACHIEVEMENT_HUNTER_DATA", &dir) };
+
+        let mut game = crate::model::Game {
+            appid: 1,
+            name: "G".to_owned(),
+            ..Default::default()
+        };
+        game.achievements = vec![Achievement {
+            api_name: "a0".to_owned(),
+            name: "ACH".to_owned(),
+            description: "desc".to_owned(),
+            guide: (0..20)
+                .map(|i| format!("1x item {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            ..Default::default()
+        }];
+
+        let ctx = egui::Context::default();
+        let mut app = App::headless(ctx.clone());
+        app.store.games = vec![game];
+        app.store.settings.filter_locked = true;
+        app.store.settings.filter_unlocked = true;
+        app.tab = Tab::Games;
+        app.selected = Some(1);
+        app.game_tab = GameTab::Achievements;
+
+        let screen = egui::vec2(1000.0, 800.0);
+        let raw = |events: Vec<egui::Event>| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), screen)),
+            events,
+            ..Default::default()
+        };
+
+        // Folded by default: the guide body is hidden behind a "Show guide" button.
+        let out = ctx.run_ui(raw(Vec::new()), |ui| app.achievement_list(ui, 1));
+        let button = text_runs(&out)
+            .into_iter()
+            .find(|(_, text)| text.starts_with("Show guide (20 lines)"))
+            .expect("folded guide should offer a Show guide button")
+            .0;
+        out.drop_without_applying_deltas();
+        assert!(!app.expanded.contains("a0"), "guide starts folded");
+
+        let press = |pressed: bool| {
+            raw(vec![
+                egui::Event::PointerMoved(button.center()),
+                egui::Event::PointerButton {
+                    pos: button.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ])
+        };
+        ctx.run_ui(press(true), |ui| app.achievement_list(ui, 1))
+            .drop_without_applying_deltas();
+        ctx.run_ui(press(false), |ui| app.achievement_list(ui, 1))
+            .drop_without_applying_deltas();
+        assert!(app.expanded.contains("a0"), "clicking Show guide expands it");
+
+        let out = ctx.run_ui(raw(Vec::new()), |ui| app.achievement_list(ui, 1));
+        assert!(
+            text_runs(&out)
+                .iter()
+                .any(|(_, text)| text.starts_with("Hide guide (20 lines)")),
+            "expanded guide should offer Hide guide"
+        );
+        out.drop_without_applying_deltas();
+
+        unsafe { std::env::remove_var("ACHIEVEMENT_HUNTER_DATA") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn text_runs(output: &egui::FullOutput) -> Vec<(egui::Rect, String)> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<(egui::Rect, String)>) {
+            match shape {
+                egui::Shape::Text(text) => out.push((
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    text.galley.job.text.clone(),
+                )),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
     }
 
     /// Every laid-out text run, so a test can prove rows do not paint over each other.
