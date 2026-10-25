@@ -2,15 +2,19 @@ use crate::model::{FlowGraph, Game};
 use crate::paths;
 use crate::settings::Settings;
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
+
+/// appid -> achievement api_name -> checked guide lines (normalized text).
+pub type Checks = HashMap<u32, HashMap<String, HashSet<String>>>;
 
 pub struct Store {
     pub settings: Settings,
     pub games: Vec<Game>,
     pub flow: HashMap<u32, FlowGraph>,
     pub sort: HashMap<u32, Vec<String>>,
+    pub checks: Checks,
 }
 
 impl Store {
@@ -22,6 +26,7 @@ impl Store {
             games: read_json(&paths::library_path()).unwrap_or_default(),
             flow: read_json(&paths::flow_path()).unwrap_or_default(),
             sort: read_json(&paths::sort_path()).unwrap_or_default(),
+            checks: read_json(&paths::checks_path()).unwrap_or_default(),
         }
     }
 
@@ -61,11 +66,21 @@ impl Store {
         )
     }
 
+    pub fn save_checks(&self) -> io::Result<()> {
+        write_atomic(
+            &paths::checks_path(),
+            &self.checks,
+            self.settings.backups_kept,
+            |v| serde_json::to_string_pretty(v).map_err(io::Error::other),
+        )
+    }
+
     pub fn save_all(&self) -> io::Result<()> {
         self.save_settings()?;
         self.save_library()?;
         self.save_flow()?;
         self.save_sort()?;
+        self.save_checks()?;
         Ok(())
     }
 
@@ -85,13 +100,16 @@ impl Store {
                     let guides = std::mem::take(&mut existing.guides);
                     let old_achievements = std::mem::take(&mut existing.achievements);
                     let notes: HashMap<String, String> = old_achievements
-                        .into_iter()
+                        .iter()
                         .filter(|a| !a.note.is_empty())
-                        .map(|a| (a.api_name, a.note))
+                        .map(|a| (a.api_name.clone(), a.note.clone()))
                         .collect();
                     *existing = game;
                     existing.art = art;
                     existing.guides = guides;
+                    if existing.achievements.is_empty() {
+                        existing.achievements = old_achievements;
+                    }
                     for achievement in &mut existing.achievements {
                         if let Some(note) = notes.get(&achievement.api_name) {
                             achievement.note = note.clone();
@@ -101,8 +119,7 @@ impl Store {
                 None => self.games.push(game),
             }
         }
-        self.games
-            .sort_by_key(|a| std::cmp::Reverse(a.playtime_minutes));
+        crate::model::sort_games(&mut self.games, self.settings.sort_mode);
     }
 }
 
@@ -176,6 +193,10 @@ mod tests {
             },
         );
         store.settings.steam_id = "42".to_owned();
+        store.checks.insert(
+            620,
+            HashMap::from([("foodie".to_owned(), HashSet::from(["bacon bite".to_owned()]))]),
+        );
         store.save_all().unwrap();
 
         let reloaded = Store::load();
@@ -183,6 +204,7 @@ mod tests {
         assert_eq!(reloaded.settings.steam_id, "42");
         assert_eq!(reloaded.sort[&620], vec!["a".to_owned()]);
         assert_eq!(reloaded.flow[&620].nodes[0].x, 1.0);
+        assert!(reloaded.checks[&620]["foodie"].contains("bacon bite"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -216,6 +238,25 @@ mod tests {
         assert_eq!(merged.guides.len(), 1);
         assert_eq!(merged.achievements[0].note, "my note");
         assert!(merged.achievements[0].unlocked);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn crucial_refresh_without_achievements_keeps_cache() {
+        let (_guard, dir, mut store) = temp_store("keep-cache");
+        let mut existing = game(620, 100);
+        existing.achievements.push(Achievement {
+            api_name: "win".to_owned(),
+            unlocked: true,
+            note: "keep me".to_owned(),
+            ..Default::default()
+        });
+        store.games = vec![existing];
+        store.replace_games(vec![game(620, 200)]);
+        let merged = store.game(620).unwrap();
+        assert_eq!(merged.achievements.len(), 1);
+        assert!(merged.achievements[0].unlocked);
+        assert_eq!(merged.achievements[0].note, "keep me");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

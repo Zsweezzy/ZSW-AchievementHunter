@@ -1,6 +1,39 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Tag {
+    Multiplayer,
+    Singleplayer,
+    Missable,
+    Grind,
+    Bugged,
+    Impossible,
+}
+
+impl Tag {
+    pub const ALL: [Tag; 6] = [
+        Tag::Multiplayer,
+        Tag::Singleplayer,
+        Tag::Missable,
+        Tag::Grind,
+        Tag::Bugged,
+        Tag::Impossible,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tag::Multiplayer => "multiplayer",
+            Tag::Singleplayer => "singleplayer",
+            Tag::Missable => "missable",
+            Tag::Grind => "grind",
+            Tag::Bugged => "bugged",
+            Tag::Impossible => "impossible",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Achievement {
     pub api_name: String,
     pub name: String,
@@ -9,11 +42,17 @@ pub struct Achievement {
     pub unlock_time: Option<u64>,
     pub global_percent: Option<f32>,
     pub icon: String,
-    #[serde(default)]
+    pub icon_gray: String,
+    pub hidden: bool,
     pub note: String,
+    pub guide: String,
+    pub mission: String,
+    pub typical_minutes: u32,
+    pub tags: Vec<Tag>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GuideInfo {
     pub source: String,
     pub url: String,
@@ -23,19 +62,23 @@ pub struct GuideInfo {
     pub completionist_hours: Option<f32>,
     pub difficulty: String,
     pub fetched_at: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub markdown: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Game {
     pub appid: u32,
     pub name: String,
     pub playtime_minutes: u64,
+    pub last_played: u64,
     pub installed: bool,
-    #[serde(default)]
+    pub has_achievements: Option<bool>,
     pub achievements: Vec<Achievement>,
-    #[serde(default)]
     pub guides: Vec<GuideInfo>,
-    #[serde(default)]
     pub art: String,
 }
 
@@ -55,21 +98,184 @@ pub struct FlowGraph {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Games,
-    Flow,
-    Sort,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Games, Tab::Flow, Tab::Sort, Tab::Settings];
+    pub const ALL: [Tab; 2] = [Tab::Games, Tab::Settings];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Games => "Games",
-            Tab::Flow => "Flowgraph",
-            Tab::Sort => "Custom Sort",
             Tab::Settings => "Settings",
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameTab {
+    Achievements,
+    Flow,
+    Sort,
+}
+
+impl GameTab {
+    pub const ALL: [GameTab; 3] = [GameTab::Achievements, GameTab::Flow, GameTab::Sort];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GameTab::Achievements => "Achievements",
+            GameTab::Flow => "Flowgraph",
+            GameTab::Sort => "Custom Sort",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SortMode {
+    #[default]
+    Playtime,
+    LastPlayed,
+    Name,
+}
+
+impl SortMode {
+    pub const ALL: [SortMode; 3] = [SortMode::Playtime, SortMode::LastPlayed, SortMode::Name];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortMode::Playtime => "Most played",
+            SortMode::LastPlayed => "Last played",
+            SortMode::Name => "Name",
+        }
+    }
+}
+
+pub fn sort_games(games: &mut [Game], mode: SortMode) {
+    match mode {
+        SortMode::Playtime => games.sort_by_key(|g| std::cmp::Reverse(g.playtime_minutes)),
+        SortMode::LastPlayed => games.sort_by_key(|g| std::cmp::Reverse(g.last_played)),
+        SortMode::Name => games.sort_by_key(|g| g.name.to_lowercase()),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AchievementSort {
+    #[default]
+    Stored,
+    Name,
+    Rarity,
+    UnlockedFirst,
+    NextUp,
+}
+
+impl AchievementSort {
+    pub const ALL: [AchievementSort; 5] = [
+        AchievementSort::Stored,
+        AchievementSort::Name,
+        AchievementSort::Rarity,
+        AchievementSort::UnlockedFirst,
+        AchievementSort::NextUp,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AchievementSort::Stored => "Default order",
+            AchievementSort::Name => "Name",
+            AchievementSort::Rarity => "Rarest first",
+            AchievementSort::UnlockedFirst => "Unlocked first",
+            AchievementSort::NextUp => "Next up",
+        }
+    }
+}
+
+pub fn achievement_order(achievements: &[Achievement], sort: AchievementSort) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..achievements.len()).collect();
+    match sort {
+        AchievementSort::Stored => {}
+        AchievementSort::Name => {
+            indices.sort_by_cached_key(|&index| achievements[index].name.to_lowercase())
+        }
+        AchievementSort::Rarity => indices.sort_by(|&a, &b| {
+            percent_asc(
+                achievements[a].global_percent,
+                achievements[b].global_percent,
+            )
+        }),
+        AchievementSort::UnlockedFirst => {
+            indices.sort_by_key(|&index| !achievements[index].unlocked)
+        }
+        AchievementSort::NextUp => indices.sort_by(|&a, &b| {
+            achievements[a]
+                .unlocked
+                .cmp(&achievements[b].unlocked)
+                .then_with(|| {
+                    percent_desc(
+                        achievements[a].global_percent,
+                        achievements[b].global_percent,
+                    )
+                })
+        }),
+    }
+    indices
+}
+
+fn percent_asc(left: Option<f32>, right: Option<f32>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => left.total_cmp(&right),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn percent_desc(left: Option<f32>, right: Option<f32>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => right.total_cmp(&left),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct Filters {
+    pub installed_only: bool,
+    pub hide_no_achievements: bool,
+    pub hide_completed: bool,
+    pub hide_unstarted: bool,
+}
+
+pub fn visible(game: &Game, filters: Filters) -> bool {
+    if filters.installed_only && !game.installed {
+        return false;
+    }
+    if filters.hide_no_achievements && game.has_achievements == Some(false) {
+        return false;
+    }
+    let total = game.achievements.len();
+    if total == 0 {
+        return true;
+    }
+    let unlocked = game.unlocked_count();
+    !((filters.hide_completed && unlocked == total) || (filters.hide_unstarted && unlocked == 0))
+}
+
+pub fn humanize_ago(seconds: u64) -> String {
+    if seconds == 0 {
+        return "never".to_owned();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = now.saturating_sub(seconds) / 86_400;
+    match days {
+        0 => "today".to_owned(),
+        1 => "yesterday".to_owned(),
+        d if d < 30 => format!("{d} days ago"),
+        d if d < 365 => format!("{} months ago", d / 30),
+        d => format!("{} years ago", d / 365),
     }
 }
 
@@ -90,12 +296,18 @@ impl Game {
     }
 }
 
-pub fn passes_filter(achievement: &Achievement, show_locked: bool, show_unlocked: bool) -> bool {
-    if achievement.unlocked {
+pub fn passes_filter(
+    achievement: &Achievement,
+    show_locked: bool,
+    show_unlocked: bool,
+    tag: Option<Tag>,
+) -> bool {
+    let shown = if achievement.unlocked {
         show_unlocked
     } else {
         show_locked
-    }
+    };
+    shown && tag.is_none_or(|tag| achievement.tags.contains(&tag))
 }
 
 pub fn sort_order_for<'a>(
@@ -136,23 +348,64 @@ mod tests {
     }
 
     #[test]
+    fn crucial_visible_hides_completed_and_unstarted() {
+        let full = Game {
+            appid: 1,
+            achievements: vec![ach("a", true)],
+            ..Default::default()
+        };
+        let unstarted = Game {
+            appid: 2,
+            achievements: vec![ach("a", false)],
+            ..Default::default()
+        };
+        let partial = Game {
+            appid: 3,
+            achievements: vec![ach("a", true), ach("b", false)],
+            ..Default::default()
+        };
+        let unsynced = Game {
+            appid: 4,
+            ..Default::default()
+        };
+        let filters = Filters {
+            hide_completed: true,
+            hide_unstarted: true,
+            ..Default::default()
+        };
+        assert!(!visible(&full, filters));
+        assert!(!visible(&unstarted, filters));
+        assert!(visible(&partial, filters));
+        assert!(visible(&unsynced, filters));
+    }
+
+    #[test]
     fn crucial_filter_shows_locked_only() {
         let locked = ach("a", false);
         let unlocked = ach("b", true);
-        assert!(passes_filter(&locked, true, false));
-        assert!(!passes_filter(&unlocked, true, false));
+        assert!(passes_filter(&locked, true, false, None));
+        assert!(!passes_filter(&unlocked, true, false, None));
     }
 
     #[test]
     fn crucial_filter_shows_both_when_both_enabled() {
-        assert!(passes_filter(&ach("a", false), true, true));
-        assert!(passes_filter(&ach("b", true), true, true));
+        assert!(passes_filter(&ach("a", false), true, true, None));
+        assert!(passes_filter(&ach("b", true), true, true, None));
+    }
+
+    #[test]
+    fn crucial_tag_filter_keeps_only_tagged_achievements() {
+        let mut tagged = ach("a", false);
+        tagged.tags.push(Tag::Missable);
+        assert!(passes_filter(&tagged, true, true, Some(Tag::Missable)));
+        assert!(!passes_filter(&tagged, true, true, Some(Tag::Grind)));
+        assert!(passes_filter(&tagged, true, true, None));
     }
 
     #[test]
     fn crucial_filter_shows_nothing_when_both_disabled() {
-        assert!(!passes_filter(&ach("a", false), false, false));
-        assert!(!passes_filter(&ach("b", true), false, false));
+        assert!(!passes_filter(&ach("a", false), false, false, None));
+        assert!(!passes_filter(&ach("b", true), false, false, None));
     }
 
     #[test]
@@ -203,5 +456,112 @@ mod tests {
         };
         assert_eq!(game.unlocked_count(), 2);
         assert_eq!(game.completion_percent(), 50.0);
+    }
+
+    #[test]
+    fn crucial_visible_hides_only_known_achievementless_games() {
+        let known_none = Game {
+            has_achievements: Some(false),
+            ..Default::default()
+        };
+        let known_some = Game {
+            has_achievements: Some(true),
+            ..Default::default()
+        };
+        let unknown = Game::default();
+        let installed = Game {
+            installed: true,
+            ..Default::default()
+        };
+        let hide = Filters {
+            hide_no_achievements: true,
+            ..Default::default()
+        };
+        let installed_only = Filters {
+            installed_only: true,
+            ..Default::default()
+        };
+        assert!(!visible(&known_none, hide));
+        assert!(visible(&known_none, Filters::default()));
+        assert!(visible(&known_some, hide));
+        assert!(visible(&unknown, hide));
+        assert!(!visible(&unknown, installed_only));
+        assert!(visible(&installed, installed_only));
+    }
+
+    #[test]
+    fn crucial_sort_games_orders_by_each_mode() {
+        let game = |name: &str, playtime: u64, last: u64| Game {
+            name: name.to_owned(),
+            playtime_minutes: playtime,
+            last_played: last,
+            ..Default::default()
+        };
+        let build = || {
+            vec![
+                game("zeta", 10, 500),
+                game("Alpha", 90, 100),
+                game("mid", 50, 900),
+            ]
+        };
+
+        let mut games = build();
+        sort_games(&mut games, SortMode::Playtime);
+        assert_eq!(games[0].name, "Alpha");
+        assert_eq!(games[2].name, "zeta");
+
+        let mut games = build();
+        sort_games(&mut games, SortMode::LastPlayed);
+        assert_eq!(games[0].name, "mid");
+        assert_eq!(games[2].name, "Alpha");
+
+        let mut games = build();
+        sort_games(&mut games, SortMode::Name);
+        assert_eq!(games[0].name, "Alpha");
+        assert_eq!(games[1].name, "mid");
+        assert_eq!(games[2].name, "zeta");
+    }
+
+    #[test]
+    fn crucial_achievement_order_sorts_without_touching_storage() {
+        let mut achievements = vec![ach("Zeta", false), ach("alpha", true), ach("Mid", false)];
+        achievements[0].global_percent = Some(12.0);
+        achievements[1].global_percent = Some(1.5);
+        achievements[2].global_percent = None;
+        let names = |sort| -> Vec<&str> {
+            achievement_order(&achievements, sort)
+                .into_iter()
+                .map(|index| achievements[index].name.as_str())
+                .collect()
+        };
+        assert_eq!(names(AchievementSort::Stored), vec!["Zeta", "alpha", "Mid"]);
+        assert_eq!(names(AchievementSort::Name), vec!["alpha", "Mid", "Zeta"]);
+        assert_eq!(names(AchievementSort::Rarity), vec!["alpha", "Zeta", "Mid"]);
+        assert_eq!(
+            names(AchievementSort::UnlockedFirst),
+            vec!["alpha", "Zeta", "Mid"]
+        );
+        assert_eq!(names(AchievementSort::NextUp), vec!["Zeta", "Mid", "alpha"]);
+        assert_eq!(
+            achievements
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Zeta", "alpha", "Mid"],
+            "sorting is a view, not a reorder"
+        );
+    }
+
+    #[test]
+    fn crucial_humanize_ago_buckets() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(humanize_ago(0), "never");
+        assert_eq!(humanize_ago(now), "today");
+        assert_eq!(humanize_ago(now - 86_400 * 2), "2 days ago");
+        assert_eq!(humanize_ago(now - 86_400 * 90), "3 months ago");
+        assert_eq!(humanize_ago(now - 86_400 * 800), "2 years ago");
     }
 }
