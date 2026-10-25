@@ -3,6 +3,22 @@
 version = 4
 
 [[package]]
+name = "ZSW-AchievementHunter"
+version = "0.2.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_extras",
+ "image",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "toml",
+ "winit",
+ "zip",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -131,22 +147,6 @@ dependencies = [
  "accesskit_windows",
  "raw-window-handle",
  "winit",
-]
-
-[[package]]
-name = "achievement-hunter"
-version = "0.2.0"
-dependencies = [
- "eframe",
- "egui",
- "egui_extras",
- "image",
- "reqwest",
- "serde",
- "serde_json",
- "toml",
- "winit",
- "zip",
 ]
 
 [[package]]

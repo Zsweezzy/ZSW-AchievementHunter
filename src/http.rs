@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-const USER_AGENT: &str = "achievement-hunter/0.1 (+https://github.com/Zsweezzy/achievement-hunter)";
+const USER_AGENT: &str = "achievement-hunter/0.1 (+https://github.com/Zsweezzy/ZSW-AchievementHunter)";
 const MAX_BODY: u64 = 16 * 1024 * 1024;
 
 fn request_failed(error: reqwest::Error) -> String {

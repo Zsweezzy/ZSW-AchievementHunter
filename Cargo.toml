@@ -1,11 +1,20 @@
 [package]
-name = "achievement-hunter"
+name = "ZSW-AchievementHunter"
 version = "0.2.0"
 edition = "2024"
 description = "Steam achievement hunting companion: library, guides, notes, flowgraphs"
 license = "MIT"
-repository = "https://github.com/Zsweezzy/achievement-hunter"
+repository = "https://github.com/Zsweezzy/ZSW-AchievementHunter"
 readme = "README.md"
+
+# The installed program keeps its original name; only the project is rebranded.
+[lib]
+name = "achievement_hunter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "achievement-hunter"
+path = "src/main.rs"
 
 [dependencies]
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "persistence", "wayland", "x11"] }

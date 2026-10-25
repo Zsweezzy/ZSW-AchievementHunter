@@ -1,4 +1,4 @@
-# achievement-hunter
+# ZSW-AchievementHunter
 
 A single-binary desktop companion for Steam achievement hunting. It shows your
 Steam library, pulls achievement progress and icons, reads completion time and
@@ -70,8 +70,8 @@ it — the tags on each achievement are what you set yourself.
 Requires Rust 1.98 or newer.
 
 ```
-git clone https://github.com/Zsweezzy/achievement-hunter
-cd achievement-hunter
+git clone https://github.com/Zsweezzy/ZSW-AchievementHunter
+cd ZSW-AchievementHunter
 cargo build --release
 ./target/release/achievement-hunter
 ```
